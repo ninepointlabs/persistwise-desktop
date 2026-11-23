@@ -4,8 +4,9 @@ A personal web archive that runs entirely on your own computer.
 
 Paste a link, and Persistwise saves a full copy of the page (text, styles,
 images, icons and fonts, in one self-contained file that opens offline).
-Browse and search everything you saved. Optionally, send each page to the
-Wayback Machine and pin it to IPFS. No account, no Nine Point Labs servers,
+Follow blogs and newsletters and every new post is saved automatically.
+Browse and search everything you saved. Pages also go to the Wayback Machine
+(on by default) and, if you set it up, to IPFS. No account, no Nine Point Labs servers,
 no telemetry.
 
 Linux is free. Windows will be a paid edition through the Microsoft Store.
@@ -72,8 +73,8 @@ Microsoft Edge WebView2 runtime (built into Windows 11).
   forms, and links are inactive (use "Open original").
 * **Search.** Titles, addresses, page text and feed names are indexed with
   SQLite full-text search. Search works offline.
-* **Wayback Machine (optional).** Tick "Also send to the Wayback Machine" (or
-  make it the default in Settings). Persistwise asks the Internet Archive's free,
+* **Wayback Machine (on by default).** Unless you untick "Also send to the
+  Wayback Machine" (or turn it off in Settings), Persistwise asks the Internet Archive's free,
   public [Save Page Now](https://web.archive.org/save) to capture the page and
   records the snapshot link. The page's address is sent to the Internet Archive
   and the capture is public. Save Page Now is often busy or limits how often a
@@ -103,20 +104,33 @@ Use "Test connection" to check it. Keys stay on your computer in
 shown as their last four characters. If IPFS is off, missing or broken, saving
 and browsing work exactly the same.
 
-## Import from Persistwise web
+## Feeds
 
-In the sidebar, **Import from Persistwise web** takes a Persistwise export (`.zip`, or the
-same files unpacked) and brings in feeds, posts, Wayback and IPFS links, and the
-saved copies. Importing again later updates what changed, so you can keep a
-local copy in sync until you retire your web account. Headless:
+Follow a blog, newsletter or social feed (RSS, Atom or JSON Feed) with **+**
+under Feeds. You can paste the feed address or just the site's address.
+Persistwise checks your feeds every 15 minutes while it is open (change it in
+Settings) and saves a full copy of every new post, sends it to the Wayback
+Machine, and pins it to IPFS if you set that up. The first check of a new feed
+saves every post the feed currently lists. Downloads that fail are retried on
+later checks; Wayback and IPFS failures are retried about hourly.
 
-```sh
-persistwise-desktop --import persistwise-export.zip
-```
+**When Persistwise is closed:** on Linux, turn on Settings → "Keep checking
+feeds when Persistwise is closed". That installs a systemd *user* timer on your
+computer (no root) that runs `persistwise-desktop --poll` on the same
+schedule; turning it off removes it. If you move the AppImage, turn the setting
+off and on again. Without systemd, run `persistwise-desktop --poll` from cron.
+The Flatpak and the Windows app check feeds while they are open.
 
-The Persistwise website cannot create this export yet. The format is in
-[docs/import-format.md](docs/import-format.md) and the proposed web-side change
-in [docs/web-export-proposal.md](docs/web-export-proposal.md).
+## Moving from the Persistwise website
+
+A one-time step, not an ongoing sync: run the read-only script
+`tools/web-export/export_archive.rb` once against the web app to get an export
+zip, then choose **Import from Persistwise web** in the sidebar (or run
+`persistwise-desktop --import persistwise-export.zip`). Your feeds, posts,
+Wayback and IPFS links and saved copies come over, and the desktop app carries
+on checking the feeds. Importing a fresher export again later updates what
+changed without duplicates. Steps: [docs/web-migration.md](docs/web-migration.md);
+format: [docs/import-format.md](docs/import-format.md).
 
 ## Known limits (v0.1)
 
@@ -127,7 +141,6 @@ in [docs/web-export-proposal.md](docs/web-export-proposal.md).
   page, 8 MB per resource, 60 MB per save).
 * Copies imported from the web app keep their original image links (the web
   app stored HTML only), so their images need the network.
-* Feeds from the web app are imported, but the desktop app does not poll feeds yet.
 * No mobile app yet.
 
 ## Build from source
@@ -145,8 +158,9 @@ npx tauri dev                            # run the app
 pwsh scripts/build-msix.ps1              # Windows: dist\*.msix (needs Windows SDK)
 ```
 
-Other flags: `--version`, `--self-test` (opens the archive and exits),
-`--smoke-test` (opens the window, checks the UI and exits).
+Other flags: `--version`, `--poll` (check feeds once and exit),
+`--import <zip|folder>`, `--self-test` (opens the archive and exits),
+`--smoke-test` (opens the window, checks the UI and feed polling, and exits).
 
 ## License
 

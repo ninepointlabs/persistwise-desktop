@@ -13,9 +13,10 @@ STATUS: PR open, ready for Tim to review (not merged, not tagged, nothing releas
 | --- | --- |
 | 1. Save a page locally (full copy) | Done. HTML plus stylesheets (with `@import`), images (incl. lazy-loaded `data-src`), icons and fonts inlined as `data:` URIs into one file; scripts and inline handlers removed; non-HTML (PDF etc.) kept byte for byte. |
 | 2. Browse and search offline | Done. SQLite + FTS5 over title, URL, page text and feed name, ranked, with highlighted snippets. Saved copies open in a sandboxed viewer (no scripts, no forms, CSP `sandbox`). |
-| 3. Optional Save Page Now | Done. Public SPN only, no keys. Records the snapshot URL; failure never touches the local copy; retry button. If SPN declines because the URL hit its daily capture limit, links the newest existing snapshot via the public availability API. |
+| 3. Save Page Now | Done, **on by default** (Tim, 2026-11-23). Public SPN only, no keys. Records the snapshot URL; failure never touches the local copy; retry button. If SPN declines because the URL hit its daily capture limit, links the newest existing snapshot via the public availability API. |
 | 4. IPFS settings page | Done. Off by default. "My own node" (IPFS Desktop / Kubo RPC, or a hosted Kubo-compatible RPC with the user's token) or "My own Pinata key". Test connection, pin-on-save, gateway, links to setup docs. Never reads the web app's `PINATA_JWT`. |
-| 5. Import from the web account | Desktop side done: documented format, importer (zip or folder, idempotent re-sync), UI, `--import` CLI, fixtures and tests. The web app has no export yet: proposal in `docs/web-export-proposal.md` (no web changes made). |
+| 5. Import from the web account | Done as a **one-time migration** (Tim: "just a tool to get set up one time"): read-only script `tools/web-export/export_archive.rb`, run once with `bin/rails runner` against the web app, writes the export zip; desktop imports it (UI or `--import`). Tested end to end against a throwaway copy of the web code with fake data. No web code changed. Steps: `docs/web-migration.md`. |
+| Feed polling (added on Tim's direction) | Done. Follow RSS/Atom/JSON feeds (or a site that links its feed); every new post is saved, sent to Wayback, pinned if IPFS is set up. Checked every 15 min while open; Linux opt-in systemd **user** timer runs `--poll` when the app is closed. Failed downloads retried, backups retried ~hourly, lock file so two pollers never overlap. Imported feeds keep being checked. |
 | 6. Packaging | AppImage: built and checked locally (see below). Flatpak: manifest + script + CI job written, **not built locally** (no flatpak here). MSIX: manifest, Store assets, script + CI job written, **not built** (no Windows here). |
 
 ## Stack and why
@@ -88,23 +89,28 @@ CI (`.github/workflows/`): `linux.yml` (tests, AppImage on ubuntu-22.04, AppImag
 
 **Windows paid, Linux free (nothing set up)**: simplest path is a paid Store listing. The Store handles payment, licence and refunds; the app needs no licence code at all, and the GitHub release keeps shipping only Linux files. Options if you want more later: a free trial via the Store's trial mode (needs a small `Windows.Services.Store` licence check in the app), or selling outside the Store with signed licence keys (needs a code-signing cert for a non-Store installer and a payment page, which conflicts with "no hosted backend" unless done through a third-party store). No Stripe product, Store listing or price was created.
 
+## Decisions from Tim (2026-11-23)
+
+- Wayback: on by default. Done.
+- License: MIT. Kept.
+- Web export: a one-time migration tool, not a feature. Replaced the "Download my archive" proposal with a read-only script that runs once (`tools/web-export/export_archive.rb`, `docs/web-migration.md`).
+- Feed polling: the desktop app does it, with a background option. Done (in-app timer + Linux systemd user timer; Windows/Flatpak check while open for now).
+
 ## Import findings (web app read only, `master` @ 703caff)
 
 - Model: `users` → `feeds` (url, name, kind, status, last_polled_at, last_error) → `posts` (guid, url, title, author, published_at, fetched_at, status, local_path) → `archive_records` (original_url, status, wayback_url, wayback_job_id, wayback_submitted_at/failed_at, cid, pin_service, archived_at, pin_failed_at, last_error).
 - HTML lives at `storage/archives/<feed_id>/<post_id>.html` with relative URLs made absolute (`SavedPageHtml`); images are not stored. Owner-only `GET /archive/:id/saved-copy`.
 - Confirmed: no export button, no API, no JSON endpoints in `config/routes.rb`; the FAQ says "Not yet".
-- Proposal (no web code changed): an owner-only "Download my archive" zip built by a Solid Queue job, in exactly the format the desktop already imports; later, optionally, a read-only token API for live sync. Details: `docs/web-export-proposal.md`. Format: `docs/import-format.md`.
+- One-time export script (no web code changed): `tools/web-export/export_archive.rb`, pure Ruby stdlib, run with `bin/rails runner`. Exports one account's feeds, posts, archive records and saved copies (with SHA-256) as a zip. Leaves out passwords, 2FA, sessions, Stripe data and `feeds.last_error`. Tested under the web app's code (Ruby 4.0.6) with a fresh dev DB and fake data in a throwaway copy that was deleted afterwards; zip passes `unzip -t`; only the chosen user's data; imported twice with no duplicates. **Not run against production**; the Railway steps in `docs/web-migration.md` are suggestions for Tim and are untested.
 - Imported copies keep remote image links (that is what the web app stored); the viewer allows https images/styles/fonts for that reason.
 
 ## Open questions for Tim
 
-1. **CI minutes**: workflows are manual/release-only so nothing burns private-repo Actions minutes unasked. OK to add `pull_request` triggers? Windows minutes count double.
-2. **Wayback default**: "Also send to the Wayback Machine" is off by default because it publishes the URL. Would you rather it default on (it is the Persistwise habit)?
-3. **License**: MIT, like the other Nine Point Labs repos. Fine for a paid Windows edition (the Store sells the build, not the code), but say if you want something else before it goes public.
-4. **Web export**: want me to build the proposed export on the web app as a separate, reviewed PR?
-5. **Feed polling**: the desktop imports feeds but does not poll them. Should v0.2 add local feed watching (the web app's main job), so the desktop fully replaces it?
-6. **Name/ID**: app id `com.ninepointlabs.Persistwise`, binary `persistwise-desktop`, shown as "Persistwise". OK?
-7. **Remote images in imported copies**: allowed in the viewer (privacy trade-off: viewing makes requests to the original sites). Option for v0.2: "localize" imported copies by fetching and inlining their images once.
+1. **CI minutes**: workflows stay manual/release-only (I used a temporary push trigger, removed straight after, to run Linux CI on request). Add `pull_request` triggers? Windows minutes count double.
+2. **Name/ID**: app id `com.ninepointlabs.Persistwise`, binary `persistwise-desktop`, shown as "Persistwise". OK?
+3. **Remote images in imported copies**: allowed in the viewer (viewing makes requests to the original sites). Option later: re-save imported pages so their images are embedded.
+4. **Windows background checking**: in-app only for now. For the Store build, an MSIX startup task (starts minimised at login) is the natural route. Want that before the Store submission?
+5. **First check of a new feed** saves every post the feed lists (matches the web app). Fine, or only posts from now on?
 
 ## Not done / could not do
 

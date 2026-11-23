@@ -82,7 +82,9 @@ const BADGE_TEXT = {
 };
 
 function badges(p) {
-  const out = [h("span", { class: "badge done" }, p.local_path ? "Saved locally" : "No local copy")];
+  const out = [p.local_path ? h("span", { class: "badge done" }, "Saved locally")
+    : p.capture_error ? h("span", { class: "badge failed", title: p.capture_error }, "Download failed, will retry")
+    : h("span", { class: "badge" }, "No local copy")];
   if (p.wayback_status !== "off") out.push(h("span", { class: `badge ${p.wayback_status}` }, BADGE_TEXT.wayback[p.wayback_status] || p.wayback_status));
   if (p.ipfs_status !== "off") out.push(h("span", { class: `badge ${p.ipfs_status}` }, BADGE_TEXT.ipfs[p.ipfs_status] || p.ipfs_status));
   if (p.origin === "import") out.push(h("span", { class: "badge" }, "Imported"));
@@ -109,23 +111,114 @@ async function refreshSidebar() {
   $("#count-all").textContent = info.stats.pages || "";
   const box = $("#feeds");
   box.replaceChildren();
-  if (feeds.length) {
-    box.append(h("h3", {}, "Feeds"));
-    for (const f of feeds) {
-      const b = h("button", { class: "nav-item", "data-view": "pages", "data-feed": String(f.id), title: f.url },
-        h("span", { class: "name" }, f.name || hostOf(f.url)), h("span", { class: "count" }, f.page_count));
-      b.addEventListener("click", () => selectFeed(f.id));
-      box.append(b);
-    }
+  state.feeds = feeds;
+  if (!feeds.length) box.append(h("p", { class: "hint", style: "padding:0 8px" }, "Follow a blog or newsletter with +."));
+  for (const f of feeds) {
+    const flag = f.status === "paused" ? h("span", { class: "paused" }, "paused")
+      : f.status === "errored" ? h("span", { class: "errored", title: f.last_error || "" }, "error") : null;
+    const b = h("button", { class: "nav-item", "data-view": "pages", "data-feed": String(f.id), title: f.url },
+      h("span", { class: "name" }, f.name || hostOf(f.url), " ", flag), h("span", { class: "count" }, f.page_count));
+    b.addEventListener("click", () => selectFeed(f.id));
+    box.append(b);
   }
+  renderFeedHeader();
   return info;
 }
 
 function selectFeed(id) {
   state.feedId = id;
+  renderFeedHeader();
   loadPages();
   show("pages");
 }
+
+function renderFeedHeader() {
+  const el = $("#feed-header");
+  const f = (state.feeds || []).find((x) => x.id === state.feedId);
+  if (!f) { el.hidden = true; el.replaceChildren(); return; }
+  el.hidden = false;
+  const paused = f.status === "paused";
+  el.replaceChildren(
+    h("h2", {}, f.name || hostOf(f.url)),
+    h("div", { class: "meta" },
+      h("span", {}, f.url),
+      h("span", {}, f.last_polled_at ? `Checked ${fmtDateTime(f.last_polled_at)}` : "Not checked yet"),
+      paused ? h("span", {}, "Paused") : null,
+      f.origin === "import" ? h("span", {}, "Imported from Persistwise web") : null,
+      f.last_error ? h("span", { class: "err" }, `Last check failed: ${f.last_error}`) : null),
+    h("div", { class: "row" },
+      h("button", { onclick: () => checkFeeds(f.id) }, "Check now"),
+      h("button", { onclick: () => pauseFeed(f, !paused) }, paused ? "Resume" : "Pause"),
+      h("button", { class: "danger", onclick: () => removeFeed(f) }, "Stop following")),
+  );
+}
+
+function fmtDateTime(s) {
+  const d = new Date(s);
+  return isNaN(d) ? s : d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+async function checkFeeds(id = null) {
+  await invoke("check_feeds", { feedId: id });
+  $("#poll-status").textContent = "Checking feeds…";
+}
+
+async function pauseFeed(f, paused) {
+  await invoke("set_feed_paused", { id: f.id, paused });
+  await refreshSidebar();
+}
+
+async function removeFeed(f) {
+  if (!confirm(`Stop following “${f.name || f.url}”? Pages already saved from it stay in your archive.`)) return;
+  await invoke("remove_feed", { id: f.id });
+  state.feedId = null;
+  await refreshSidebar();
+  await loadPages();
+  show("pages");
+}
+
+$("#feed-add-toggle").addEventListener("click", () => {
+  const form = $("#feed-add");
+  form.hidden = !form.hidden;
+  if (!form.hidden) $("#feed-url").focus();
+});
+$("#feeds-check").addEventListener("click", () => checkFeeds(null));
+$("#feed-add").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  let url = $("#feed-url").value.trim();
+  if (!url) return;
+  if (!/^https?:\/\//i.test(url)) url = `https://${url}`;
+  const btn = $("#feed-add-btn");
+  btn.disabled = true;
+  btn.textContent = "Looking…";
+  try {
+    const feed = await invoke("add_feed", { url });
+    $("#feed-url").value = "";
+    $("#feed-add").hidden = true;
+    $("#poll-status").textContent = `Following ${feed.name || hostOf(feed.url)}. Saving its posts…`;
+    await refreshSidebar();
+    selectFeed(feed.id);
+  } catch (err) {
+    alert(`Could not follow that: ${err}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Follow";
+  }
+});
+
+listen("poll-state", async (e) => {
+  const st = e.payload;
+  const el = $("#poll-status");
+  if (st.running) { el.textContent = "Checking feeds…"; return; }
+  if (st.message) { el.textContent = st.message; }
+  else {
+    const n = st.reports.reduce((a, r) => a + r.new_pages, 0);
+    const errs = st.reports.filter((r) => r.error).length;
+    el.textContent = `Checked ${st.reports.length} feed${st.reports.length === 1 ? "" : "s"} at ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}: ${n} new post${n === 1 ? "" : "s"}${errs ? `, ${errs} failed` : ""}.`;
+  }
+  await refreshSidebar();
+  if (!$("#view-pages").hidden) await loadPages();
+});
 
 async function loadPages(append = false) {
   if (!append) state.offset = 0;
@@ -191,7 +284,8 @@ async function renderReader(p, reloadFrame) {
   meta.replaceChildren(...[
     h("span", {}, `Saved ${fmtDate(p.saved_at)}`),
     p.size_bytes ? h("span", {}, fmtBytes(p.size_bytes)) : null,
-    p.origin === "desktop" ? h("span", {}, `${p.assets_inlined} resources inlined${p.assets_failed ? `, ${p.assets_failed} could not be` : ""}`) : h("span", {}, "Imported from Persistwise web"),
+    p.origin !== "import" ? h("span", {}, `${p.assets_inlined} resources inlined${p.assets_failed ? `, ${p.assets_failed} could not be` : ""}`) : h("span", {}, "Imported from Persistwise web"),
+    p.capture_error && !p.local_path ? h("span", { class: "err" }, `Download failed (will retry on the next check): ${p.capture_error}`) : null,
     p.wayback_status === "pending" ? h("span", {}, "Waiting for Save Page Now…") : null,
     p.wayback_error && p.wayback_status === "failed" ? h("span", { class: "err" }, `Wayback: ${p.wayback_error}`) : null,
     p.ipfs_status === "pending" ? h("span", {}, "Pinning to IPFS…") : null,
@@ -333,6 +427,7 @@ function fillSettings(view) {
   state.settings = view.settings;
   const s = view.settings;
   $("#set-wayback").checked = s.wayback_on_save;
+  $("#poll-minutes").value = String(s.feeds.poll_minutes);
   const radio = document.querySelector(`input[name="ipfs-mode"][value="${s.ipfs.mode}"]`);
   if (radio) radio.checked = true;
   $("#kubo-url").value = s.ipfs.kubo_api_url;
@@ -347,10 +442,25 @@ function fillSettings(view) {
 }
 
 async function loadSettings() {
-  const [view, info] = await Promise.all([invoke("get_settings"), invoke("app_info")]);
+  const [view, info, bg] = await Promise.all([invoke("get_settings"), invoke("app_info"), invoke("background_status")]);
   fillSettings(view);
   $("#data-dir").textContent = info.data_dir;
+  fillBackground(bg);
 }
+
+function fillBackground(bg) {
+  const box = $("#bg-enabled");
+  box.checked = bg.enabled;
+  box.disabled = !bg.supported;
+  $("#bg-status").textContent = !bg.supported ? bg.reason
+    : bg.enabled ? `On: a systemd user timer runs ${bg.command}. If you move the AppImage, turn this off and on again.`
+    : "Uses a systemd user timer on this computer (no root, nothing runs on our servers).";
+}
+
+$("#bg-enabled").addEventListener("change", async (e) => {
+  try { fillBackground(await invoke("set_background", { enabled: e.target.checked })); }
+  catch (err) { e.target.checked = !e.target.checked; $("#bg-status").textContent = `Could not change it: ${err}`; }
+});
 
 function secretField(el) {
   const v = el.value;
@@ -361,6 +471,7 @@ function secretField(el) {
 $("#settings-save").addEventListener("click", async () => {
   const s = structuredClone(state.settings);
   s.wayback_on_save = $("#set-wayback").checked;
+  s.feeds.poll_minutes = Number($("#poll-minutes").value);
   s.ipfs.mode = document.querySelector('input[name="ipfs-mode"]:checked')?.value || "off";
   s.ipfs.kubo_api_url = $("#kubo-url").value.trim() || "http://127.0.0.1:5001";
   s.ipfs.pin_on_save = $("#pin-on-save").checked;

@@ -24,7 +24,17 @@
       <div class="nav-group">
         <button class="nav-item active" data-view="pages" data-feed="">All pages <span id="count-all" class="count"></span></button>
       </div>
-      <div id="feeds" class="nav-group"></div>
+      <div class="nav-group">
+        <div class="group-head"><h3>Feeds</h3>
+          <span><button id="feeds-check" class="mini" title="Check all feeds now" aria-label="Check all feeds now">↻</button><button id="feed-add-toggle" class="mini" title="Follow a feed" aria-label="Follow a feed">+</button></span></div>
+        <form id="feed-add" class="feed-add" hidden autocomplete="off">
+          <input id="feed-url" type="url" placeholder="Blog or feed address" required aria-label="Blog or feed address">
+          <button id="feed-add-btn" type="submit" class="primary">Follow</button>
+          <small class="hint">New posts are saved automatically. The first check saves every post the feed lists now.</small>
+        </form>
+        <div id="feeds"></div>
+        <small id="poll-status" class="hint poll-status"></small>
+      </div>
       <div class="nav-bottom">
         <button class="nav-item" data-view="import">Import from Persistwise web</button>
         <button class="nav-item" data-view="settings">Settings</button>
@@ -34,6 +44,7 @@
 
     <main id="main">
       <section id="view-pages" class="view">
+        <div id="feed-header" class="feed-header" hidden></div>
         <div id="status" class="status" role="status" aria-live="polite"></div>
         <ul id="page-list" class="page-list"></ul>
         <div id="empty" class="empty" hidden>
@@ -56,9 +67,9 @@
 
       <section id="view-import" class="view prose" hidden>
         <h1>Import from Persistwise web</h1>
-        <p>Bring your feeds, posts, Wayback and IPFS links and the saved copies from your Persistwise web account into this computer. Importing again later updates what changed and adds what is new, so you can keep this copy in sync until you no longer need the website.</p>
+        <p>A one-time move: bring your feeds, posts, Wayback and IPFS links and saved copies from your Persistwise web account onto this computer. After that, Persistwise checks your feeds itself.</p>
         <div class="callout">
-          <strong>Heads up:</strong> the Persistwise website does not have an export button yet. When it does, it will give you a <code>.zip</code> you can choose here. The format is documented in <code>docs/import-format.md</code>.
+          Make the export with the one-time script <code>tools/web-export/export_archive.rb</code> (see <code>docs/web-migration.md</code>), then choose the <code>.zip</code> here. Importing a fresher export again later updates what changed, with no duplicates.
         </div>
         <div class="row">
           <button id="import-zip" class="primary">Choose export (.zip)…</button>
@@ -71,8 +82,22 @@
         <h1>Settings</h1>
 
         <h2>Wayback Machine</h2>
-        <p>Persistwise can ask the Internet Archive's free, public <a href="#" data-ext="https://web.archive.org/save">Save Page Now</a> to capture pages you save. No account is needed. The page's address is sent to the Internet Archive and the capture becomes public. Save Page Now is often busy; when it fails, your local copy is still saved and you can try again from the page.</p>
-        <label class="check"><input id="set-wayback" type="checkbox"> Tick "Also send to the Wayback Machine" by default</label>
+        <p>Persistwise asks the Internet Archive's free, public <a href="#" data-ext="https://web.archive.org/save">Save Page Now</a> to capture pages you save. No account is needed. The page's address is sent to the Internet Archive and the capture becomes public. Save Page Now is often busy; when it fails, your local copy is still saved and you can try again from the page.</p>
+        <label class="check"><input id="set-wayback" type="checkbox"> Send pages to the Wayback Machine (on by default; also used for posts from feeds)</label>
+
+        <h2>Feeds</h2>
+        <p>Persistwise checks the feeds you follow and saves every new post, just like the Persistwise website did, but on this computer.</p>
+        <div class="fields">
+          <label>Check feeds
+            <select id="poll-minutes">
+              <option value="15">every 15 minutes</option>
+              <option value="30">every 30 minutes</option>
+              <option value="60">every hour</option>
+              <option value="0">only when I press ↻</option>
+            </select></label>
+          <label class="check"><input id="bg-enabled" type="checkbox"> Keep checking feeds when Persistwise is closed</label>
+          <small class="hint" id="bg-status"></small>
+        </div>
 
         <h2>IPFS (optional)</h2>
         <p>IPFS keeps a copy addressable by its content (a CID) so anyone can fetch it from any IPFS gateway while someone pins it. It is entirely optional. Persistwise does not run or pay for pinning; you choose one of these, or leave it off.</p>

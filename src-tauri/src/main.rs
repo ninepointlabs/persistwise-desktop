@@ -3,7 +3,9 @@
 // and the optional backups you turn on.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod background;
 mod hostenv;
+mod poller;
 mod theme;
 
 use persistwise_core::capture::CaptureOptions;
@@ -151,6 +153,59 @@ fn delete_page(state: State<AppState>, id: i64) -> CmdResult<()> {
     state.store.delete_page(id).map_err(err)
 }
 
+// ---------- feeds ----------
+
+#[tauri::command]
+async fn add_feed(
+    state: State<'_, AppState>,
+    poller: State<'_, poller::Poller>,
+    url: String,
+) -> CmdResult<Feed> {
+    let store = state.store.clone();
+    let (feed, _created) =
+        blocking(move || persistwise_core::feeds::subscribe(&store, &url)).await?;
+    poller.check_now(Some(feed.id));
+    Ok(feed)
+}
+
+#[tauri::command]
+fn check_feeds(poller: State<poller::Poller>, feed_id: Option<i64>) {
+    poller.check_now(feed_id);
+}
+
+#[tauri::command]
+fn polling_now(poller: State<poller::Poller>) -> bool {
+    poller.running.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+#[tauri::command]
+fn set_feed_paused(state: State<AppState>, id: i64, paused: bool) -> CmdResult<()> {
+    state
+        .store
+        .set_feed_status(id, if paused { "paused" } else { "active" }, None, false)
+        .map_err(err)
+}
+
+#[tauri::command]
+fn remove_feed(state: State<AppState>, id: i64) -> CmdResult<()> {
+    state.store.delete_feed(id).map_err(err)
+}
+
+#[tauri::command]
+fn background_status() -> background::Status {
+    background::status()
+}
+
+#[tauri::command]
+fn set_background(state: State<AppState>, enabled: bool) -> CmdResult<background::Status> {
+    if enabled {
+        let minutes = settings::load(state.store.root()).feeds.poll_minutes;
+        background::enable(if minutes == 0 { 15 } else { minutes })
+    } else {
+        background::disable()
+    }
+}
+
 #[derive(Serialize)]
 struct SettingsView {
     settings: Settings,
@@ -191,6 +246,10 @@ fn save_settings(
 ) -> CmdResult<SettingsView> {
     let root = state.store.root();
     settings::save(root, &settings).map_err(err)?;
+    // Keep the background timer's schedule in step with the setting.
+    if background::status().enabled && settings.feeds.poll_minutes > 0 {
+        let _ = background::enable(settings.feeds.poll_minutes);
+    }
     if let Some(up) = secrets {
         let mut cur: Secrets = settings::load_secrets(root);
         let apply = |slot: &mut Option<String>, v: Option<String>| {
@@ -400,6 +459,17 @@ const SMOKE_JS: &str = r#"
       const csp = (r.headers.get("content-security-policy") || "").startsWith("sandbox");
       if (r.status !== 200 || !csp || missing.status !== 404) throw new Error("saved copy protocol misbehaved");
     }
+    // Feed polling through the real poller thread and its events.
+    const feeds = await invoke("list_feeds");
+    if (feeds.length) {
+      const done = new Promise((resolve) => {
+        window.__TAURI__.event.listen("poll-state", (e) => { if (!e.payload.running) resolve(e.payload); });
+      });
+      await invoke("check_feeds", { feedId: null });
+      const st = await done;
+      if (st.message) throw new Error("poll: " + st.message);
+      out.push("poll ok, " + st.reports.length + " feeds, " + st.reports.reduce((a, r) => a + r.new_pages, 0) + " new, errors=" + st.reports.filter((r) => r.error).length);
+    }
     await invoke("smoke_report", { ok: true, details: out.join("; ") });
   } catch (e) {
     await window.__TAURI__.core.invoke("smoke_report", { ok: false, details: out.join("; ") + " ERROR " + e });
@@ -477,6 +547,31 @@ fn main() {
     }
     // `--self-test`: open the archive, print a summary and exit. Used by the
     // packaging smoke tests; no window, no network.
+    // `--poll`: check feeds once, archive new posts, print a JSON report and
+    // exit. This is what the background timer runs.
+    if args.iter().any(|a| a == "--poll") {
+        let opts = persistwise_core::feeds::PollOptions::from_settings(&store);
+        match persistwise_core::feeds::poll_all(&store, None, &opts, &mut |_| {}) {
+            Ok(reports) => {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&reports).unwrap_or_default()
+                );
+                return;
+            }
+            Err(e)
+                if e.downcast_ref::<persistwise_core::feeds::AlreadyPolling>()
+                    .is_some() =>
+            {
+                println!("Feeds are already being checked; nothing to do.");
+                return;
+            }
+            Err(e) => {
+                eprintln!("feed check failed: {e:#}");
+                std::process::exit(1);
+            }
+        }
+    }
     if args.iter().any(|a| a == "--self-test") {
         let stats = store.stats().expect("stats");
         println!(
@@ -490,6 +585,7 @@ fn main() {
 
     let smoke = args.iter().any(|a| a == "--smoke-test");
     let protocol_store = store.clone();
+    let poller_store = store.clone();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -498,6 +594,8 @@ fn main() {
             serve_saved_copy(&protocol_store, &request)
         })
         .setup(move |app| {
+            let poller = poller::Poller::start(app.handle().clone(), poller_store.clone());
+            app.manage(poller);
             if smoke {
                 // Exercises the real webview: IPC, the app CSP and the saved
                 // copy protocol. The page reports back through smoke_report.
@@ -510,7 +608,7 @@ fn main() {
                 }
                 let handle = app.handle().clone();
                 std::thread::spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_secs(30));
+                    std::thread::sleep(std::time::Duration::from_secs(120));
                     eprintln!("smoke test: timed out");
                     handle.exit(4);
                 });
@@ -535,7 +633,14 @@ fn main() {
             open_external,
             ipfs_link,
             omarchy_theme,
-            smoke_report
+            smoke_report,
+            add_feed,
+            check_feeds,
+            polling_now,
+            set_feed_paused,
+            remove_feed,
+            background_status,
+            set_background
         ])
         .run(tauri::generate_context!())
         .expect("error while running Persistwise");

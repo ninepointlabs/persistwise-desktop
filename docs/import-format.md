@@ -1,9 +1,8 @@
 # Persistwise export format (`persistwise-export`, version 1)
 
 This is the file Persistwise Desktop imports to bring over a Persistwise web
-account. The web app cannot produce it yet; `docs/web-export-proposal.md`
-describes the small web-side change that would. Until then the format,
-the importer and its tests live here so either side can be built against it.
+account, once. It is made by the one-time script `tools/web-export/export_archive.rb`
+(see `docs/web-migration.md`); the web app itself has no export feature.
 
 A working example is in `crates/core/tests/fixtures/export-v1/`.
 

@@ -1,0 +1,195 @@
+//! "Keep checking feeds when Persistwise is closed."
+//!
+//! On Linux with systemd this installs a *user* timer (no root, no service we
+//! run) that starts `persistwise-desktop --poll` every few minutes: it checks
+//! feeds once and exits. Turning it off removes exactly those two files.
+//! Not available in the Flatpak (no access to the host's systemd) or on
+//! Windows yet; there, feeds are checked while the app is open.
+
+use serde::Serialize;
+use std::path::PathBuf;
+
+pub const UNIT: &str = "com.ninepointlabs.Persistwise-poll";
+
+#[derive(Serialize, Debug, Clone)]
+pub struct Status {
+    pub supported: bool,
+    pub enabled: bool,
+    /// Why it is not available, in plain words.
+    pub reason: Option<String>,
+    /// The command the timer runs.
+    pub command: Option<String>,
+}
+
+fn unit_dir() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+    Some(base.join("systemd/user"))
+}
+
+/// The program the timer should start: the AppImage file itself when we run
+/// from one, otherwise this executable.
+fn program() -> Option<String> {
+    if let Some(ai) = std::env::var_os("APPIMAGE").filter(|a| !a.is_empty()) {
+        return Some(PathBuf::from(ai).display().to_string());
+    }
+    std::env::current_exe()
+        .ok()
+        .map(|p| p.display().to_string())
+}
+
+fn in_flatpak() -> bool {
+    std::env::var_os("FLATPAK_ID").is_some() || std::path::Path::new("/.flatpak-info").exists()
+}
+
+fn has_systemctl() -> bool {
+    std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).any(|d| d.join("systemctl").is_file()))
+        .unwrap_or(false)
+}
+
+pub fn status() -> Status {
+    let unsupported = |reason: &str| Status {
+        supported: false,
+        enabled: false,
+        reason: Some(reason.into()),
+        command: None,
+    };
+    if !cfg!(target_os = "linux") {
+        return unsupported("On Windows, feeds are checked while Persistwise is open. Background checking is planned for the Store version.");
+    }
+    if in_flatpak() {
+        return unsupported("The Flatpak cannot set up a background timer. Feeds are checked while Persistwise is open (the AppImage can do this).");
+    }
+    if !has_systemctl() {
+        return unsupported("This system does not use systemd. You can run `persistwise-desktop --poll` from cron instead.");
+    }
+    let Some(dir) = unit_dir() else {
+        return unsupported("Could not find your config folder.");
+    };
+    let enabled = dir.join(format!("{UNIT}.timer")).is_file();
+    Status {
+        supported: true,
+        enabled,
+        reason: None,
+        command: program().map(|p| format!("\"{p}\" --poll")),
+    }
+}
+
+/// systemd unit files for a check every `minutes`.
+pub fn unit_files(program: &str, minutes: u32, data_dir: Option<&str>) -> (String, String) {
+    let quoted = program.replace('\\', "\\\\").replace('"', "\\\"");
+    let env = data_dir
+        .map(|d| {
+            format!(
+                "Environment=\"PERSISTWISE_DATA_DIR={}\"\n",
+                d.replace('"', "\\\"")
+            )
+        })
+        .unwrap_or_default();
+    let service = format!(
+        "[Unit]\nDescription=Persistwise: check feeds and archive new posts\nAfter=network-online.target\n\n\
+         [Service]\nType=oneshot\nExecStart=\"{quoted}\" --poll\n{env}Nice=10\nIOSchedulingClass=idle\n"
+    );
+    let calendar = match minutes {
+        0 | 60.. => "hourly".to_string(),
+        m => format!("*:0/{m}"),
+    };
+    let timer = format!(
+        "[Unit]\nDescription=Persistwise: check feeds every {minutes} minutes\n\n\
+         [Timer]\nOnCalendar={calendar}\nPersistent=true\nRandomizedDelaySec=60\n\n[Install]\nWantedBy=timers.target\n"
+    );
+    (service, timer)
+}
+
+fn systemctl(args: &[&str]) -> Result<(), String> {
+    let out = crate::hostenv::host_command("systemctl")
+        .arg("--user")
+        .args(args)
+        .output()
+        .map_err(|e| format!("could not run systemctl: {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}
+
+pub fn enable(minutes: u32) -> Result<Status, String> {
+    let st = status();
+    if !st.supported {
+        return Err(st.reason.unwrap_or_default());
+    }
+    let dir = unit_dir().ok_or("no config folder")?;
+    let program = program().ok_or("could not find the Persistwise program")?;
+    let data_dir = std::env::var("PERSISTWISE_DATA_DIR")
+        .ok()
+        .filter(|d| !d.is_empty());
+    let (service, timer) = unit_files(&program, minutes.max(5), data_dir.as_deref());
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::fs::write(dir.join(format!("{UNIT}.service")), service).map_err(|e| e.to_string())?;
+    std::fs::write(dir.join(format!("{UNIT}.timer")), timer).map_err(|e| e.to_string())?;
+    systemctl(&["daemon-reload"])?;
+    systemctl(&["enable", "--now", &format!("{UNIT}.timer")])?;
+    Ok(status())
+}
+
+pub fn disable() -> Result<Status, String> {
+    let dir = unit_dir().ok_or("no config folder")?;
+    let _ = systemctl(&["disable", "--now", &format!("{UNIT}.timer")]);
+    for ext in ["timer", "service"] {
+        let f = dir.join(format!("{UNIT}.{ext}"));
+        if f.exists() {
+            std::fs::remove_file(f).map_err(|e| e.to_string())?;
+        }
+    }
+    let _ = systemctl(&["daemon-reload"]);
+    Ok(status())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unit_files_quote_paths_and_set_the_schedule() {
+        let (service, timer) =
+            unit_files("/home/u/Apps/Persist wise.AppImage", 15, Some("/data/pw"));
+        assert!(service.contains("ExecStart=\"/home/u/Apps/Persist wise.AppImage\" --poll"));
+        assert!(service.contains("Environment=\"PERSISTWISE_DATA_DIR=/data/pw\""));
+        assert!(service.contains("Type=oneshot"));
+        assert!(timer.contains("OnCalendar=*:0/15"));
+        assert!(timer.contains("Persistent=true"));
+        assert!(unit_files("/x", 60, None).1.contains("OnCalendar=hourly"));
+        assert!(!unit_files("/x", 30, None).0.contains("Environment="));
+    }
+
+    #[test]
+    fn systemd_accepts_the_units() {
+        // Only where systemd-analyze exists; it reads the files, installs nothing.
+        let Some(sa) = ["/usr/bin/systemd-analyze", "/bin/systemd-analyze"]
+            .into_iter()
+            .find(|p| std::path::Path::new(p).exists())
+        else {
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("pw-units-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (service, timer) = unit_files("/bin/true", 15, None);
+        std::fs::write(dir.join(format!("{UNIT}.service")), service).unwrap();
+        std::fs::write(dir.join(format!("{UNIT}.timer")), timer).unwrap();
+        let out = std::process::Command::new(sa)
+            .arg("verify")
+            .arg("--user")
+            .arg(dir.join(format!("{UNIT}.service")))
+            .arg(dir.join(format!("{UNIT}.timer")))
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{stderr}");
+        assert!(!stderr.contains(UNIT), "{stderr}");
+    }
+}
