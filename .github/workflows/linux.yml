@@ -70,7 +70,7 @@ jobs:
           xvfb-run -a dbus-run-session -- "$AI" --appimage-extract-and-run --smoke-test
           # Children must not inherit the bundled library paths.
           "$AI" --appimage-extract-and-run --print-child-env > child-env.txt
-          ! grep -E "^(LD_LIBRARY_PATH|GTK_PATH|GIO_MODULE_DIR|GDK_PIXBUF_MODULE_FILE)=.*mount_" child-env.txt
+          ! grep -E "\.mount_|appimage_extracted" child-env.txt
           # Opt-in desktop integration, in a temp XDG_DATA_HOME.
           export XDG_DATA_HOME=$(mktemp -d)
           APPIMAGE="$PWD/$AI" build/appimage/squashfs-root/AppRun --install-desktop-entry

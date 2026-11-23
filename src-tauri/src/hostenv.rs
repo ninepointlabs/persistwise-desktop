@@ -32,10 +32,30 @@ pub const MANAGED: &[&str] = &[
     "WEBKIT_DISABLE_COMPOSITING_MODE",
 ];
 
-/// A Command that runs with the host environment restored when we are
-/// inside the AppImage, and unchanged otherwise.
+/// The directory the user started us from. Inside the AppImage the bundled
+/// launcher must change directory (Tauri's WebKitGTK finds its helper
+/// processes relative to it), so AppRun records the original one.
+fn caller_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("PERSISTWISE_CALLER_CWD").map(std::path::PathBuf::from)
+}
+
+/// A path the user typed on the command line, resolved against the directory
+/// they ran the command in.
+pub fn user_path(p: &str) -> std::path::PathBuf {
+    let path = std::path::PathBuf::from(p);
+    match caller_dir() {
+        Some(dir) if path.is_relative() => dir.join(path),
+        _ => path,
+    }
+}
+
+/// A Command that runs with the host environment (and working directory)
+/// restored when we are inside the AppImage, and unchanged otherwise.
 pub fn host_command(program: &str) -> Command {
     let mut cmd = Command::new(program);
+    if let Some(dir) = caller_dir() {
+        cmd.current_dir(dir);
+    }
     if std::env::var_os("PERSISTWISE_HOST_ENV_SAVED").is_some() {
         for v in MANAGED {
             match std::env::var_os(format!("PERSISTWISE_HOST_{v}")) {
@@ -47,9 +67,21 @@ pub fn host_command(program: &str) -> Command {
                 }
             }
         }
+        // Anything else that points into the mounted AppImage (for example the
+        // GStreamer plugin paths set by the bundled hooks) is dropped too.
+        if let Some(appdir) = std::env::var("APPDIR").ok().filter(|a| a.len() > 1) {
+            for (k, v) in std::env::vars() {
+                if v.contains(&appdir) && !MANAGED.contains(&k.as_str()) {
+                    cmd.env_remove(&k);
+                }
+            }
+        }
         for (k, _) in std::env::vars_os() {
             if let Some(k) = k.to_str() {
-                if k.starts_with("PERSISTWISE_HOST_") || k == "APPDIR" || k == "APPIMAGE_GTK_THEME"
+                if k.starts_with("PERSISTWISE_HOST_")
+                    || k == "PERSISTWISE_CALLER_CWD"
+                    || k == "APPDIR"
+                    || k == "APPIMAGE_GTK_THEME"
                 {
                     cmd.env_remove(k);
                 }
@@ -89,10 +121,16 @@ mod tests {
         std::env::set_var("PATH", "/tmp/.mount_x/usr/bin:/usr/bin:/bin");
         std::env::set_var("GTK_PATH", "/tmp/.mount_x/usr/lib/gtk-3.0");
         std::env::remove_var("PERSISTWISE_HOST_GTK_PATH");
+        std::env::set_var("APPDIR", "/tmp/.mount_x");
+        std::env::set_var("GST_PLUGIN_SYSTEM_PATH", "/tmp/.mount_x/usr/lib/gstreamer:");
         let out = host_command("env").output().expect("run env");
         let env = String::from_utf8_lossy(&out.stdout);
         assert!(env.lines().any(|l| l == "PATH=/usr/bin:/bin"), "{env}");
         assert!(!env.lines().any(|l| l.starts_with("GTK_PATH=")), "{env}");
         assert!(!env.contains("PERSISTWISE_HOST_"), "{env}");
+        assert!(
+            !env.contains("/tmp/.mount_x"),
+            "nothing may point into the AppImage: {env}"
+        );
     }
 }

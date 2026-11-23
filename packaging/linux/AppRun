@@ -89,6 +89,10 @@ for v in LD_LIBRARY_PATH LD_PRELOAD PATH XDG_DATA_DIRS GTK_DATA_PREFIX GTK_THEME
   fi
 done
 export PERSISTWISE_HOST_ENV_SAVED=1
+# The bundled launcher changes directory (WebKitGTK finds its helpers from
+# there). The app resolves paths the user typed, e.g. --import ./export.zip,
+# against this, and starts other programs here.
+export PERSISTWISE_CALLER_CWD="$PWD"
 export APPDIR
 
 exec "$APPDIR/AppRun.tauri" "$@"

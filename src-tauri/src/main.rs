@@ -582,7 +582,7 @@ fn main() {
             eprintln!("usage: persistwise-desktop --import <export.zip|folder>");
             std::process::exit(2);
         };
-        match import::import(&store, std::path::Path::new(path)) {
+        match import::import(&store, &hostenv::user_path(path)) {
             Ok(r) => {
                 println!("{}", serde_json::to_string_pretty(&r).unwrap_or_default());
                 std::process::exit(if r.problems.is_empty() { 0 } else { 3 });
