@@ -17,7 +17,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use crate::util;
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 /// Marks where a search hit starts and ends in a snippet. Private-use
 /// characters, so the UI can HTML-escape the snippet and then swap these
@@ -41,6 +41,7 @@ pub struct Feed {
     pub created_at: String,
     pub origin: String,
     pub page_count: i64,
+    pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -73,8 +74,10 @@ pub struct Page {
     pub pin_service: Option<String>,
     pub ipfs_error: Option<String>,
     pub ipfs_at: Option<String>,
-    /// desktop | import
+    /// desktop | import | feed
     pub origin: String,
+    /// Why the last download of this page failed (feed pages are retried).
+    pub capture_error: Option<String>,
     /// Search snippet, only set on search results.
     pub snippet: Option<String>,
 }
@@ -110,7 +113,7 @@ pub struct Stats {
 const PAGE_COLUMNS: &str = "p.id, p.uid, p.url, p.final_url, p.title, p.author, p.feed_id, f.name, p.guid, \
     p.published_at, p.saved_at, p.content_type, p.local_path, p.size_bytes, p.sha256, p.assets_inlined, \
     p.assets_failed, p.wayback_status, p.wayback_url, p.wayback_error, p.wayback_at, p.ipfs_status, p.cid, \
-    p.pin_service, p.ipfs_error, p.ipfs_at, p.origin";
+    p.pin_service, p.ipfs_error, p.ipfs_at, p.origin, p.capture_error";
 
 fn page_from_row(r: &Row, snippet: Option<String>) -> rusqlite::Result<Page> {
     Ok(Page {
@@ -141,6 +144,7 @@ fn page_from_row(r: &Row, snippet: Option<String>) -> rusqlite::Result<Page> {
         ipfs_error: r.get(24)?,
         ipfs_at: r.get(25)?,
         origin: r.get(26)?,
+        capture_error: r.get(27)?,
         snippet,
     })
 }
@@ -287,7 +291,7 @@ impl Store {
                 );
                 let mut stmt = conn.prepare(&sql)?;
                 let rows = stmt.query_map(params![q, feed_id, limit, offset], |r| {
-                    let snip: Option<String> = r.get(27)?;
+                    let snip: Option<String> = r.get(28)?;
                     page_from_row(r, snip.filter(|s| !s.is_empty()))
                 })?;
                 for r in rows {
@@ -433,6 +437,26 @@ impl Store {
                 |r| r.get(0),
             )
             .optional()?;
+        // A feed already followed on this computer with the same URL is adopted.
+        let existing = match existing {
+            Some(id) => Some(id),
+            None => {
+                let by_url: Option<i64> = conn
+                    .query_row(
+                        "SELECT id FROM feeds WHERE url = ?1 AND remote_key IS NULL",
+                        [url],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                if let Some(id) = by_url {
+                    conn.execute(
+                        "UPDATE feeds SET remote_key = ?2 WHERE id = ?1",
+                        params![id, remote_key],
+                    )?;
+                }
+                by_url
+            }
+        };
         if let Some(id) = existing {
             conn.execute(
                 "UPDATE feeds SET url=?2, name=?3, kind=?4, status=?5, last_polled_at=?6 WHERE id=?1",
@@ -457,7 +481,7 @@ impl Store {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT f.id, f.url, f.name, f.kind, f.status, f.last_polled_at, f.created_at, f.origin, \
-             (SELECT COUNT(*) FROM pages p WHERE p.feed_id = f.id) FROM feeds f ORDER BY COALESCE(f.name, f.url)",
+             (SELECT COUNT(*) FROM pages p WHERE p.feed_id = f.id), f.last_error FROM feeds f ORDER BY COALESCE(f.name, f.url)",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok(Feed {
@@ -470,9 +494,175 @@ impl Store {
                 created_at: r.get(6)?,
                 origin: r.get(7)?,
                 page_count: r.get(8)?,
+                last_error: r.get(9)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn feed(&self, id: i64) -> Result<Option<Feed>> {
+        Ok(self.feeds()?.into_iter().find(|f| f.id == id))
+    }
+
+    /// Adds a feed the user subscribed to on this computer. Returns the
+    /// existing feed if that URL is already there.
+    pub fn add_feed(
+        &self,
+        url: &str,
+        name: Option<&str>,
+        kind: Option<&str>,
+    ) -> Result<(i64, bool)> {
+        let conn = self.conn();
+        if let Some(id) = conn
+            .query_row("SELECT id FROM feeds WHERE url = ?1", [url], |r| {
+                r.get::<_, i64>(0)
+            })
+            .optional()?
+        {
+            return Ok((id, false));
+        }
+        conn.execute(
+            "INSERT INTO feeds (url, name, kind, status, created_at, origin) VALUES (?1, ?2, ?3, 'active', ?4, 'desktop')",
+            params![url, name, kind, util::now()],
+        )?;
+        Ok((conn.last_insert_rowid(), true))
+    }
+
+    /// Removes a feed. Its saved pages stay in the archive.
+    pub fn delete_feed(&self, id: i64) -> Result<()> {
+        let conn = self.conn();
+        conn.execute("UPDATE pages_fts SET feed = '' WHERE rowid IN (SELECT id FROM pages WHERE feed_id = ?1)", [id])?;
+        conn.execute("UPDATE pages SET feed_id = NULL WHERE feed_id = ?1", [id])?;
+        conn.execute("DELETE FROM feeds WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    /// active | paused | errored, plus the last poll time and error.
+    pub fn set_feed_status(
+        &self,
+        id: i64,
+        status: &str,
+        error: Option<&str>,
+        polled: bool,
+    ) -> Result<()> {
+        let conn = self.conn();
+        if polled {
+            conn.execute(
+                "UPDATE feeds SET status = ?2, last_error = ?3, last_polled_at = ?4 WHERE id = ?1",
+                params![id, status, error, util::now()],
+            )?;
+        } else {
+            conn.execute(
+                "UPDATE feeds SET status = ?2, last_error = ?3 WHERE id = ?1",
+                params![id, status, error],
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn set_feed_name(&self, id: i64, name: &str) -> Result<()> {
+        self.conn().execute(
+            "UPDATE feeds SET name = ?2 WHERE id = ?1 AND (name IS NULL OR name = '')",
+            params![id, name],
+        )?;
+        Ok(())
+    }
+
+    pub fn page_by_feed_guid(&self, feed_id: i64, guid: &str) -> Result<Option<Page>> {
+        let conn = self.conn();
+        let sql = format!("SELECT {PAGE_COLUMNS} FROM pages p LEFT JOIN feeds f ON f.id = p.feed_id WHERE p.feed_id = ?1 AND p.guid = ?2");
+        Ok(conn
+            .query_row(&sql, params![feed_id, guid], |r| page_from_row(r, None))
+            .optional()?)
+    }
+
+    /// Links an existing page to a web-export record so later imports update it.
+    pub fn set_remote_key(&self, id: i64, key: &str) -> Result<()> {
+        self.conn().execute(
+            "UPDATE pages SET remote_key = ?2 WHERE id = ?1",
+            params![id, key],
+        )?;
+        Ok(())
+    }
+
+    /// Pages of a feed matching a WHERE fragment over `p` (internal use).
+    fn feed_pages_where(&self, feed_id: i64, cond: &str) -> Result<Vec<Page>> {
+        let conn = self.conn();
+        let sql = format!(
+            "SELECT {PAGE_COLUMNS} FROM pages p LEFT JOIN feeds f ON f.id = p.feed_id WHERE p.feed_id = ?1 AND ({cond}) ORDER BY p.id"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map([feed_id], |r| page_from_row(r, None))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Feed pages whose download failed and should be tried again.
+    pub fn pages_needing_capture(&self, feed_id: i64, max_attempts: i64) -> Result<Vec<Page>> {
+        self.feed_pages_where(
+            feed_id,
+            &format!("p.local_path IS NULL AND p.capture_attempts < {max_attempts}"),
+        )
+    }
+
+    /// Feed pages without a Wayback snapshot whose last try (if any) is older
+    /// than `retry_after_minutes`.
+    pub fn pages_needing_wayback(
+        &self,
+        feed_id: i64,
+        retry_after_minutes: i64,
+    ) -> Result<Vec<Page>> {
+        self.feed_pages_where(
+            feed_id,
+            &format!(
+                "p.wayback_url IS NULL AND p.wayback_status != 'pending' AND (p.wayback_at IS NULL OR p.wayback_at < strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-{retry_after_minutes} minutes'))"
+            ),
+        )
+    }
+
+    /// Feed pages with a local copy but no CID whose last try (if any) is
+    /// older than `retry_after_minutes`.
+    pub fn pages_needing_ipfs(&self, feed_id: i64, retry_after_minutes: i64) -> Result<Vec<Page>> {
+        self.feed_pages_where(
+            feed_id,
+            &format!(
+                "p.cid IS NULL AND p.local_path IS NOT NULL AND p.ipfs_status != 'pending' AND (p.ipfs_at IS NULL OR p.ipfs_at < strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-{retry_after_minutes} minutes'))"
+            ),
+        )
+    }
+
+    pub fn record_capture_failure(&self, id: i64, error: &str) -> Result<()> {
+        self.conn().execute(
+            "UPDATE pages SET capture_error = ?2, capture_attempts = capture_attempts + 1 WHERE id = ?1",
+            params![id, error],
+        )?;
+        Ok(())
+    }
+
+    /// Attaches a successful (re)download to an existing page row.
+    #[allow(clippy::too_many_arguments)]
+    pub fn attach_capture(
+        &self,
+        id: i64,
+        file: (String, i64, String),
+        content_type: &str,
+        final_url: Option<&str>,
+        title: Option<&str>,
+        body_text: &str,
+        assets: (i64, i64),
+    ) -> Result<()> {
+        let conn = self.conn();
+        conn.execute(
+            "UPDATE pages SET local_path = ?2, size_bytes = ?3, sha256 = ?4, content_type = ?5, final_url = COALESCE(?6, final_url), \
+             title = COALESCE(title, ?7), assets_inlined = ?8, assets_failed = ?9, capture_error = NULL, \
+             capture_attempts = capture_attempts + 1, saved_at = ?10 WHERE id = ?1",
+            params![id, file.0, file.1, file.2, content_type, final_url, title, assets.0, assets.1, util::now()],
+        )?;
+        let (t, url): (Option<String>, String) =
+            conn.query_row("SELECT title, url FROM pages WHERE id = ?1", [id], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })?;
+        index_page(&conn, id, t.as_deref(), &url, body_text)?;
+        Ok(())
     }
 
     pub fn stats(&self) -> Result<Stats> {
@@ -587,6 +777,21 @@ fn migrate(conn: &Connection) -> Result<()> {
             CREATE INDEX pages_feed ON pages(feed_id);
             CREATE VIRTUAL TABLE pages_fts USING fts5(title, url, body, feed, tokenize = 'unicode61 remove_diacritics 2');
             PRAGMA user_version = 1;
+            COMMIT;
+            "#,
+        )?;
+    }
+    if version < 2 {
+        // v2: local feed polling. Feeds remember their last error and can be
+        // paused; feed pages whose download failed are retried on later polls.
+        conn.execute_batch(
+            r#"
+            BEGIN;
+            ALTER TABLE feeds ADD COLUMN last_error TEXT;
+            ALTER TABLE pages ADD COLUMN capture_error TEXT;
+            ALTER TABLE pages ADD COLUMN capture_attempts INTEGER NOT NULL DEFAULT 0;
+            CREATE UNIQUE INDEX pages_feed_guid ON pages(feed_id, guid) WHERE feed_id IS NOT NULL AND guid IS NOT NULL;
+            PRAGMA user_version = 2;
             COMMIT;
             "#,
         )?;

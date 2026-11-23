@@ -53,30 +53,38 @@ impl Server {
         let port = server.server_addr().to_ip().unwrap().port();
         let seen = Arc::new(Mutex::new(Vec::new()));
         let seen2 = seen.clone();
+        let handler = Arc::new(handler);
         std::thread::spawn(move || {
+            // One thread per request, so a slow or stalled request never
+            // holds up the others (the app fetches assets in parallel).
             for mut req in server.incoming_requests() {
-                let mut body = Vec::new();
-                let _ = req.as_reader().read_to_end(&mut body);
-                let method = req.method().to_string();
-                let url = req.url().to_string();
-                seen2.lock().unwrap().push(Seen {
-                    method: method.clone(),
-                    url: url.clone(),
-                    headers: req
-                        .headers()
-                        .iter()
-                        .map(|h| (h.field.to_string(), h.value.to_string()))
-                        .collect(),
-                    body,
+                let handler = handler.clone();
+                let seen = seen2.clone();
+                std::thread::spawn(move || {
+                    let mut body = Vec::new();
+                    let _ = req.as_reader().read_to_end(&mut body);
+                    let method = req.method().to_string();
+                    let url = req.url().to_string();
+                    seen.lock().unwrap().push(Seen {
+                        method: method.clone(),
+                        url: url.clone(),
+                        headers: req
+                            .headers()
+                            .iter()
+                            .map(|h| (h.field.to_string(), h.value.to_string()))
+                            .collect(),
+                        body,
+                    });
+                    let r = handler(&method, &url);
+                    let mut resp =
+                        tiny_http::Response::from_data(r.body).with_status_code(r.status);
+                    for (k, v) in r.headers {
+                        resp.add_header(
+                            tiny_http::Header::from_bytes(k.as_bytes(), v.as_bytes()).unwrap(),
+                        );
+                    }
+                    let _ = req.respond(resp);
                 });
-                let r = handler(&method, &url);
-                let mut resp = tiny_http::Response::from_data(r.body).with_status_code(r.status);
-                for (k, v) in r.headers {
-                    resp.add_header(
-                        tiny_http::Header::from_bytes(k.as_bytes(), v.as_bytes()).unwrap(),
-                    );
-                }
-                let _ = req.respond(resp);
             }
         });
         Self {

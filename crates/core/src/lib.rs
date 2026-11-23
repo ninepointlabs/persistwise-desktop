@@ -8,6 +8,7 @@
 //! * [`import`]: bring in a Persistwise web account export.
 
 pub mod capture;
+pub mod feeds;
 pub mod http;
 pub mod import;
 pub mod ipfs;

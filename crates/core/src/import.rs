@@ -258,7 +258,19 @@ fn import_post(
     report: &mut Report,
 ) -> Result<()> {
     let key = format!("{host}:post:{}", p.id);
-    let existing = store.page_by_remote_key(&key)?;
+    let mut existing = store.page_by_remote_key(&key)?;
+    // The same entry may already have been saved by local feed polling.
+    if existing.is_none() {
+        if let (Some(fid), Some(guid)) = (
+            p.feed_id.and_then(|f| feed_ids.get(&f).copied()),
+            p.guid.as_deref(),
+        ) {
+            if let Some(page) = store.page_by_feed_guid(fid, guid)? {
+                store.set_remote_key(page.id, &key)?;
+                existing = Some(page);
+            }
+        }
+    }
 
     // The saved copy, verified against its checksum when one is given.
     let mut copy: Option<(Vec<u8>, String)> = None;
@@ -306,7 +318,14 @@ fn import_post(
 
     let page = match existing {
         Some(page) => {
+            // A copy this computer saved itself (fully inlined) is kept over
+            // the web app's HTML; imported copies are refreshed when changed.
+            let local_is_better = page.origin != "import" && store.file_path(&page).is_some();
             let file = match &copy {
+                Some(_) if local_is_better => {
+                    report.copies_unchanged += 1;
+                    None
+                }
                 Some((bytes, sha))
                     if page.sha256.as_deref() != Some(sha.as_str())
                         || store.file_path(&page).is_none() =>

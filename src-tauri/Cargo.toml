@@ -3,6 +3,7 @@ name = "persistwise-desktop"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Persistwise Desktop: a personal web archive that runs entirely on your own machine."
 default-run = "persistwise-desktop"
 

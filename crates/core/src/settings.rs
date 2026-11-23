@@ -6,12 +6,37 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Settings {
-    /// Tick "Also send to the Wayback Machine" by default when saving.
+    /// Send saved pages to the Wayback Machine (public Save Page Now).
+    /// On by default; it is what Persistwise is for. Feed pages follow it too.
     pub wayback_on_save: bool,
     pub ipfs: IpfsSettings,
+    pub feeds: FeedSettings,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            wayback_on_save: true,
+            ipfs: IpfsSettings::default(),
+            feeds: FeedSettings::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct FeedSettings {
+    /// How often feeds are checked while the app is open. 0 turns it off.
+    pub poll_minutes: u32,
+}
+
+impl Default for FeedSettings {
+    fn default() -> Self {
+        Self { poll_minutes: 15 }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -136,12 +161,17 @@ mod tests {
     fn round_trip_and_defaults() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(load(dir.path()), Settings::default());
+        assert!(
+            Settings::default().wayback_on_save,
+            "Wayback is on by default"
+        );
         let s = Settings {
-            wayback_on_save: true,
+            wayback_on_save: false,
             ipfs: IpfsSettings {
                 mode: IpfsMode::Kubo,
                 ..Default::default()
             },
+            feeds: FeedSettings { poll_minutes: 30 },
         };
         save(dir.path(), &s).unwrap();
         assert_eq!(load(dir.path()), s);

@@ -3,6 +3,7 @@ name = "persistwise-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Local archive engine for Persistwise Desktop: capture, store, search, Wayback, IPFS, import."
 
 [dependencies]
@@ -11,6 +12,7 @@ base64 = "0.23.1"
 chrono = { version = "0.4.45", features = ["serde"] }
 directories = "6.0.0"
 encoding_rs = "0.8.44"
+feed-rs = "3.0.0"
 lol_html = "3.0.3"
 rand = "0.10.4"
 regex = "1.13.2"
