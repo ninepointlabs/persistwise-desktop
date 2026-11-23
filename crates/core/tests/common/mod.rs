@@ -45,45 +45,26 @@ pub struct Server {
 }
 
 impl Server {
+    /// A minimal HTTP/1.1 server: one thread per connection, one response per
+    /// connection (`Connection: close`). Deliberately simple; an earlier
+    /// version built on tiny_http occasionally never delivered a response
+    /// when several keep-alive requests were in flight.
     pub fn start<F>(handler: F) -> Self
     where
         F: Fn(&str, &str) -> Reply + Send + Sync + 'static,
     {
-        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-        let port = server.server_addr().to_ip().unwrap().port();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
         let seen = Arc::new(Mutex::new(Vec::new()));
         let seen2 = seen.clone();
         let handler = Arc::new(handler);
         std::thread::spawn(move || {
-            // One thread per request, so a slow or stalled request never
-            // holds up the others (the app fetches assets in parallel).
-            for mut req in server.incoming_requests() {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { continue };
                 let handler = handler.clone();
                 let seen = seen2.clone();
                 std::thread::spawn(move || {
-                    let mut body = Vec::new();
-                    let _ = req.as_reader().read_to_end(&mut body);
-                    let method = req.method().to_string();
-                    let url = req.url().to_string();
-                    seen.lock().unwrap().push(Seen {
-                        method: method.clone(),
-                        url: url.clone(),
-                        headers: req
-                            .headers()
-                            .iter()
-                            .map(|h| (h.field.to_string(), h.value.to_string()))
-                            .collect(),
-                        body,
-                    });
-                    let r = handler(&method, &url);
-                    let mut resp =
-                        tiny_http::Response::from_data(r.body).with_status_code(r.status);
-                    for (k, v) in r.headers {
-                        resp.add_header(
-                            tiny_http::Header::from_bytes(k.as_bytes(), v.as_bytes()).unwrap(),
-                        );
-                    }
-                    let _ = req.respond(resp);
+                    let _ = serve_one(stream, &*handler, &seen);
                 });
             }
         });
@@ -112,3 +93,56 @@ pub const PNG: &[u8] = &[
     0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae,
     0x42, 0x60, 0x82,
 ];
+
+fn serve_one(
+    mut stream: std::net::TcpStream,
+    handler: &dyn Fn(&str, &str) -> Reply,
+    seen: &Mutex<Vec<Seen>>,
+) -> std::io::Result<()> {
+    use std::io::{BufRead, BufReader, Read, Write};
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+    let mut reader = BufReader::new(stream.try_clone()?);
+    let mut line = String::new();
+    reader.read_line(&mut line)?;
+    let mut parts = line.split_whitespace();
+    let method = parts.next().unwrap_or("").to_string();
+    let url = parts.next().unwrap_or("").to_string();
+    let mut headers = Vec::new();
+    let mut len = 0usize;
+    loop {
+        let mut h = String::new();
+        if reader.read_line(&mut h)? == 0 || h == "\r\n" || h == "\n" {
+            break;
+        }
+        if let Some((k, v)) = h.trim_end().split_once(':') {
+            if k.eq_ignore_ascii_case("content-length") {
+                len = v.trim().parse().unwrap_or(0);
+            }
+            headers.push((k.trim().to_string(), v.trim().to_string()));
+        }
+    }
+    let mut body = vec![0; len];
+    reader.read_exact(&mut body)?;
+    seen.lock().unwrap().push(Seen {
+        method: method.clone(),
+        url: url.clone(),
+        headers,
+        body,
+    });
+
+    let r = handler(&method, &url);
+    let mut head = format!(
+        "HTTP/1.1 {} X\r\nContent-Length: {}\r\nConnection: close\r\n",
+        r.status,
+        r.body.len()
+    );
+    for (k, v) in &r.headers {
+        head.push_str(&format!("{k}: {v}\r\n"));
+    }
+    head.push_str("\r\n");
+    stream.write_all(head.as_bytes())?;
+    stream.write_all(&r.body)?;
+    stream.flush()?;
+    let _ = stream.shutdown(std::net::Shutdown::Both);
+    Ok(())
+}

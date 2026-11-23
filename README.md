@@ -160,7 +160,7 @@ npm ci                                   # Tauri CLI
 cargo test --workspace                   # tests (no network needed)
 npx tauri dev                            # run the app
 ./scripts/build-appimage.sh              # dist/*.AppImage (+ .zsync, .sha256)
-./scripts/build-flatpak.sh               # dist/*.flatpak (needs flatpak-builder)
+./scripts/build-flatpak.sh               # dist/*.flatpak (needs flatpak)
 pwsh scripts/build-msix.ps1              # Windows: dist\*.msix (needs Windows SDK)
 ```
 
