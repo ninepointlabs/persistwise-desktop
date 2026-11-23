@@ -79,7 +79,7 @@ CI (`.github/workflows/`): `linux.yml` (tests, AppImage on ubuntu-22.04, AppImag
 
 **AppImage**: done locally. Remaining: run `linux.yml` once (Actions → Linux → Run workflow) to get the glibc-2.35 build and the CI checks. Tauri's bundler downloads linuxdeploy from tauri-apps' own pinned release URLs plus `linuxdeploy-plugin-appimage` from a `continuous` URL (not hash-pinned by Tauri); appimagetool 1.9.1 is pinned by SHA-256 in `scripts/build-appimage.sh`.
 
-**Flatpak bundle (self-hosted, never Flathub)**: `packaging/flatpak/com.ninepointlabs.Persistwise.yml` (GNOME 48 runtime, network + Wayland/X11 + DRI, no home access) and `scripts/build-flatpak.sh`. Remaining: run `linux.yml`; then install the bundle on a test machine and check the file-chooser portal (import) and that "Open original" opens the browser.
+**Flatpak bundle (self-hosted, never Flathub)**: `packaging/flatpak/com.ninepointlabs.Persistwise.yml` (GNOME 50 runtime, network + Wayland/X11 + DRI, no home access) and `scripts/build-flatpak.sh`. Remaining: run `linux.yml`; then install the bundle on a test machine and check the file-chooser portal (import) and that "Open original" opens the browser.
 
 **MSIX / Microsoft Store**: `packaging/windows/msix/AppxManifest.xml` (full-trust Win32, `internetClient`, Windows 10 1809+), Store logo assets, `scripts/build-msix.ps1`, `windows.yml`. Remaining, in order:
 1. Tim: a Partner Center developer account (company accounts may have a registration fee depending on account type; that is Tim's call, I created nothing).

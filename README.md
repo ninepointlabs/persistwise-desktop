@@ -46,7 +46,7 @@ autonomix-cli add https://github.com/ninepointlabs/persistwise-desktop
 * **Flatpak bundle** (self-hosted, not on Flathub): download
   `persistwise-desktop-<version>-x86_64.flatpak` and run
   `flatpak install --user ./persistwise-desktop-<version>-x86_64.flatpak`.
-  It needs the GNOME 48 runtime from Flathub, which flatpak offers to install.
+  It needs the GNOME 50 runtime from Flathub, which flatpak offers to install.
 * **autonomix-cli**: `autonomix-cli add https://github.com/ninepointlabs/persistwise-desktop`
   ([autonomix-cli](https://github.com/ninepointlabs/autonomix-cli)).
 

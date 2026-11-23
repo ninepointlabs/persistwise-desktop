@@ -9,7 +9,7 @@ APP_ID=com.ninepointlabs.Persistwise
 VERSION="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' src-tauri/tauri.conf.json | head -1)"
 [ -x target/release/persistwise-desktop ] || { echo "build the release binary first"; exit 1; }
 flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-flatpak install --user -y --noninteractive flathub org.gnome.Platform//48 org.gnome.Sdk//48
+flatpak install --user -y --noninteractive flathub org.gnome.Platform//50 org.gnome.Sdk//50
 mkdir -p dist build/flatpak
 flatpak-builder --user --force-clean --disable-rofiles-fuse \
   --repo=build/flatpak/repo build/flatpak/build-dir packaging/flatpak/$APP_ID.yml

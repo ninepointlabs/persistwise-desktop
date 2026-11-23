@@ -7,7 +7,7 @@
 # Build locally:  scripts/build-flatpak.sh  (needs flatpak + flatpak-builder)
 id: com.ninepointlabs.Persistwise
 runtime: org.gnome.Platform
-runtime-version: '48'
+runtime-version: '50'
 sdk: org.gnome.Sdk
 command: persistwise-desktop
 finish-args:
