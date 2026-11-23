@@ -87,6 +87,15 @@ jobs:
           chmod +x appimagelint
           ./appimagelint --appimage-extract-and-run dist/persistwise-desktop-*-x86_64.AppImage || true
 
+      - name: Free disk space for Flatpak
+        run: |
+          df -h /
+          # Built artefacts no longer needed (the release binary stays).
+          rm -rf target/debug build/appimage/squashfs-root
+          # Large preinstalled toolchains this job never uses.
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+
       - name: Flatpak bundle
         run: ./scripts/build-flatpak.sh
 
