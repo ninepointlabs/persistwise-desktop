@@ -1,0 +1,44 @@
+# Windows: tests, unsigned app build and an MSIX for the Microsoft Store.
+#
+# Manual only (Actions > Windows > Run workflow). Windows is the paid
+# edition, so these files are kept as workflow artifacts and are NOT
+# attached to the public GitHub release. Nothing here talks to the Store.
+name: Windows
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Test
+        run: cargo test --workspace
+      - name: Build app
+        run: |
+          npm ci --no-audit --no-fund
+          npx tauri build --no-bundle
+      - name: Self-test
+        shell: pwsh
+        run: |
+          $env:PERSISTWISE_DATA_DIR = Join-Path $env:RUNNER_TEMP "pw-data"
+          .\target\release\persistwise-desktop.exe --self-test | Out-Host
+          .\target\release\persistwise-desktop.exe --import crates\core\tests\fixtures\export-v1 | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw "import failed" }
+      - name: MSIX (unsigned, placeholder identity)
+        shell: pwsh
+        run: .\scripts\build-msix.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-packages
+          path: |
+            target/release/persistwise-desktop.exe
+            dist/*.msix

@@ -35,22 +35,7 @@ pub fn omarchy_theme_dir() -> Option<PathBuf> {
 pub fn read() -> Option<ThemeColors> {
     let dir = omarchy_theme_dir()?;
     let text = std::fs::read_to_string(dir.join("colors.toml")).ok()?;
-    let mut colors = HashMap::new();
-    let mut mode = String::from("dark");
-    for line in text.lines() {
-        let l = line.trim();
-        if l.starts_with('#') || !l.contains('=') {
-            continue;
-        }
-        let (k, v) = l.split_once('=').unwrap();
-        let k = k.trim();
-        let v = v.trim().trim_matches('"').trim();
-        if k == "mode" {
-            mode = v.to_string();
-        } else if is_hex_colour(v) && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-            colors.insert(k.to_string(), v.to_string());
-        }
-    }
+    let (mode, colors) = parse(&text);
     if colors.is_empty() {
         return None;
     }
@@ -73,7 +58,45 @@ pub fn read() -> Option<ThemeColors> {
     })
 }
 
+/// Reads `mode` and the hex colours out of an Omarchy `colors.toml`.
+pub fn parse(text: &str) -> (String, HashMap<String, String>) {
+    let mut colors = HashMap::new();
+    let mut mode = String::from("dark");
+    for line in text.lines() {
+        let l = line.trim();
+        if l.starts_with('#') || !l.contains('=') {
+            continue;
+        }
+        let (k, v) = l.split_once('=').unwrap();
+        let k = k.trim();
+        let v = v.trim().trim_matches('"').trim();
+        if k == "mode" {
+            mode = v.to_string();
+        } else if is_hex_colour(v) && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            colors.insert(k.to_string(), v.to_string());
+        }
+    }
+    (mode, colors)
+}
+
 fn is_hex_colour(v: &str) -> bool {
     let h = v.strip_prefix('#').unwrap_or("");
     matches!(h.len(), 3 | 6 | 8) && h.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_omarchy_colors_toml() {
+        let (mode, c) = parse(
+            "mode = \"light\"\n# comment = \"#ffffff\"\naccent = \"#E8B92E\"\nbackground=\"#101828\"\nbad = \"not a colour\"\n",
+        );
+        assert_eq!(mode, "light");
+        assert_eq!(c.get("accent").map(String::as_str), Some("#E8B92E"));
+        assert_eq!(c.get("background").map(String::as_str), Some("#101828"));
+        assert!(!c.contains_key("bad"));
+        assert!(!c.contains_key("comment"));
+    }
 }

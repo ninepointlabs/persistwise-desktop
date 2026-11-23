@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.ninepointlabs.Persistwise</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Persistwise</name>
+  <summary>A personal web archive that runs on your own computer</summary>
+  <developer id="com.ninepointlabs">
+    <name>Nine Point Labs</name>
+  </developer>
+  <description>
+    <p>
+      Persistwise Desktop saves full copies of web pages on your own computer: text, styles,
+      images and fonts in one file that opens offline. Browse and search everything you saved,
+      with no account and no servers.
+    </p>
+    <p>Optional backups, all set up by you:</p>
+    <ul>
+      <li>Send pages to the Wayback Machine through the Internet Archive's public Save Page Now.</li>
+      <li>Pin saved copies to IPFS with your own node (IPFS Desktop or Kubo) or your own pinning key.</li>
+    </ul>
+    <p>It can also import an export of a Persistwise web account, so your archive can live entirely on your machine.</p>
+  </description>
+  <launchable type="desktop-id">com.ninepointlabs.Persistwise.desktop</launchable>
+  <provides>
+    <binary>persistwise-desktop</binary>
+  </provides>
+  <url type="homepage">https://github.com/ninepointlabs/persistwise-desktop</url>
+  <url type="bugtracker">https://github.com/ninepointlabs/persistwise-desktop/issues</url>
+  <categories>
+    <category>Network</category>
+    <category>Utility</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-11-23">
+      <description>
+        <p>First version: local full-page saves, offline browse and search, optional Wayback and IPFS backups, and Persistwise web export import.</p>
+      </description>
+    </release>
+  </releases>
+</component>

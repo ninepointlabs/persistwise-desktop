@@ -3,6 +3,7 @@
 // and the optional backups you turn on.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod hostenv;
 mod theme;
 
 use persistwise_core::capture::CaptureOptions;
@@ -254,11 +255,24 @@ async fn import_export(
     }))
 }
 
+/// Opens a URL or file with the desktop's default app. On Linux this runs
+/// xdg-open with the host environment restored (see hostenv.rs), falling
+/// back to the opener plugin; elsewhere it uses the opener plugin.
+fn open_target(app: &AppHandle, target: &str, is_url: bool) -> CmdResult<()> {
+    #[cfg(target_os = "linux")]
+    if hostenv::xdg_open(target).is_ok() {
+        return Ok(());
+    }
+    if is_url {
+        app.opener().open_url(target, None::<&str>).map_err(err)
+    } else {
+        app.opener().open_path(target, None::<&str>).map_err(err)
+    }
+}
+
 #[tauri::command]
 fn open_data_dir(app: AppHandle, state: State<AppState>) -> CmdResult<()> {
-    app.opener()
-        .open_path(state.store.root().display().to_string(), None::<&str>)
-        .map_err(err)
+    open_target(&app, &state.store.root().display().to_string(), false)
 }
 
 /// Opens a page's saved file in the system's default app (for PDFs etc).
@@ -269,9 +283,7 @@ fn open_saved_file(app: AppHandle, state: State<AppState>, id: i64) -> CmdResult
         .store
         .file_path(&page)
         .ok_or("the saved copy is missing")?;
-    app.opener()
-        .open_path(path.display().to_string(), None::<&str>)
-        .map_err(err)
+    open_target(&app, &path.display().to_string(), false)
 }
 
 #[tauri::command]
@@ -279,7 +291,7 @@ fn open_external(app: AppHandle, url: String) -> CmdResult<()> {
     if !(url.starts_with("https://") || url.starts_with("http://")) {
         return Err("only web links can be opened".into());
     }
-    app.opener().open_url(url, None::<&str>).map_err(err)
+    open_target(&app, &url, true)
 }
 
 #[tauri::command]
@@ -409,6 +421,8 @@ fn main() {
     {
         glib::set_prgname(Some(APP_ID));
         glib::set_application_name("Persistwise");
+        // Wayland app_id and X11 WM_CLASS instance both come from this. (On
+        // X11 GTK capitalises the class part; launchers match the instance.)
     }
     let root = match Store::default_root() {
         Ok(r) => r,
@@ -449,6 +463,17 @@ fn main() {
                 std::process::exit(1);
             }
         }
+    }
+    // `--print-child-env`: show the environment a program started by the app
+    // (xdg-open) would get. Used to check the AppImage does not leak its
+    // bundled library paths.
+    if args.iter().any(|a| a == "--print-child-env") {
+        let out = hostenv::host_command("env").output();
+        match out {
+            Ok(o) => print!("{}", String::from_utf8_lossy(&o.stdout)),
+            Err(e) => eprintln!("could not run env: {e}"),
+        }
+        return;
     }
     // `--self-test`: open the archive, print a summary and exit. Used by the
     // packaging smoke tests; no window, no network.

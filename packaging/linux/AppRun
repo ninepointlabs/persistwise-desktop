@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# Persistwise Desktop AppImage launcher.
+#
+# 1. Handles the opt-in desktop integration flags before anything else:
+#      --install-desktop-entry   add Persistwise to your app menu and dock
+#      --remove-desktop-entry    remove exactly what --install-desktop-entry added
+# 2. Remembers the host environment so programs the app starts (xdg-open for
+#    "Open original", "Open data folder") get a clean host environment, not
+#    the AppImage's bundled library paths.
+# 3. Hands off to the bundled WebKitGTK/GTK launcher (AppRun.tauri).
+#
+# Nothing here runs automatically on first launch and nothing phones home.
+set -euo pipefail
+
+APPDIR="${APPDIR:-"$(dirname "$(readlink -f "$0")")"}"
+APP_ID="com.ninepointlabs.Persistwise"
+DATA_HOME="${XDG_DATA_HOME:-"$HOME/.local/share"}"
+APPS_DIR="$DATA_HOME/applications"
+ICONS_DIR="$DATA_HOME/icons/hicolor"
+SIZES="16 24 32 48 64 128 256 512"
+
+install_entry() {
+  if [ -z "${APPIMAGE:-}" ]; then
+    echo "Persistwise: --install-desktop-entry only works when run from the .AppImage file itself (APPIMAGE is not set)."
+    echo "If you extracted it, run the .AppImage file instead, or use Gear Lever or AppImageLauncher."
+    return 0
+  fi
+  mkdir -p "$APPS_DIR"
+  local dest="$APPS_DIR/$APP_ID.desktop"
+  local exec_path
+  exec_path="$(printf '%s' "$APPIMAGE" | sed 's/["`$\\]/\\&/g')"
+  sed -e "s|^Exec=.*|Exec=\"$exec_path\"|" \
+      -e "s|^TryExec=.*|TryExec=$APPIMAGE|" \
+      -e "/^X-AppImage-Version=/d" \
+      "$APPDIR/usr/share/applications/$APP_ID.desktop" > "$dest.tmp"
+  mv "$dest.tmp" "$dest"
+  chmod 644 "$dest"
+  echo "Installed $dest"
+  for s in $SIZES; do
+    local src="$APPDIR/usr/share/icons/hicolor/${s}x${s}/apps/$APP_ID.png"
+    [ -f "$src" ] || continue
+    mkdir -p "$ICONS_DIR/${s}x${s}/apps"
+    cp -f "$src" "$ICONS_DIR/${s}x${s}/apps/$APP_ID.png"
+    echo "Installed $ICONS_DIR/${s}x${s}/apps/$APP_ID.png"
+  done
+  if [ -f "$APPDIR/usr/share/icons/hicolor/scalable/apps/$APP_ID.svg" ]; then
+    mkdir -p "$ICONS_DIR/scalable/apps"
+    cp -f "$APPDIR/usr/share/icons/hicolor/scalable/apps/$APP_ID.svg" "$ICONS_DIR/scalable/apps/$APP_ID.svg"
+    echo "Installed $ICONS_DIR/scalable/apps/$APP_ID.svg"
+  fi
+  refresh_caches
+  echo "Persistwise is now in your app menu."
+}
+
+remove_entry() {
+  local removed=0
+  for f in "$APPS_DIR/$APP_ID.desktop" "$ICONS_DIR/scalable/apps/$APP_ID.svg"; do
+    if [ -f "$f" ]; then rm -f "$f"; echo "Removed $f"; removed=1; fi
+  done
+  for s in $SIZES; do
+    local f="$ICONS_DIR/${s}x${s}/apps/$APP_ID.png"
+    if [ -f "$f" ]; then rm -f "$f"; echo "Removed $f"; removed=1; fi
+  done
+  refresh_caches
+  [ "$removed" = 1 ] && echo "Persistwise was removed from your app menu." || echo "Nothing to remove."
+}
+
+refresh_caches() {
+  if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database "$APPS_DIR" >/dev/null 2>&1 || true
+  fi
+  if command -v gtk-update-icon-cache >/dev/null 2>&1 && [ -d "$ICONS_DIR" ]; then
+    gtk-update-icon-cache -f -t "$ICONS_DIR" >/dev/null 2>&1 || true
+  fi
+}
+
+case "${1:-}" in
+  --install-desktop-entry) install_entry; exit 0 ;;
+  --remove-desktop-entry) remove_entry; exit 0 ;;
+esac
+
+# Save the host values of everything the bundled launcher changes. The app
+# restores these (or unsets them) for any program it starts.
+for v in LD_LIBRARY_PATH LD_PRELOAD PATH XDG_DATA_DIRS GTK_DATA_PREFIX GTK_THEME GTK_EXE_PREFIX GTK_PATH \
+         GTK_IM_MODULE_FILE GDK_PIXBUF_MODULE_FILE GDK_BACKEND GSETTINGS_SCHEMA_DIR GI_TYPELIB_PATH GIO_MODULE_DIR \
+         GIO_EXTRA_MODULES PYTHONHOME PYTHONPATH PERLLIB QT_PLUGIN_PATH WEBKIT_DISABLE_COMPOSITING_MODE; do
+  if [ -n "${!v+x}" ]; then
+    export "PERSISTWISE_HOST_$v=${!v}"
+  fi
+done
+export PERSISTWISE_HOST_ENV_SAVED=1
+export APPDIR
+
+exec "$APPDIR/AppRun.tauri" "$@"

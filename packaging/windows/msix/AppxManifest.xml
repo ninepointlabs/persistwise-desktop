@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  MSIX manifest for Persistwise Desktop (Microsoft Store ready).
+  scripts/build-msix.ps1 fills in the placeholders:
+    @IDENTITY_NAME@     Package/Identity/Name from Partner Center (Product identity)
+    @PUBLISHER@         Package/Identity/Publisher from Partner Center, e.g. CN=XXXXXXXX-XXXX-...
+    @PUBLISHER_NAME@    Publisher display name from Partner Center
+    @VERSION@           four-part version, e.g. 0.1.0.0 (the Store requires the last part to be 0)
+  Until Tim reserves the app name in Partner Center, the defaults below are
+  placeholders and the package is for local testing only.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap rescap">
+
+  <Identity
+    Name="@IDENTITY_NAME@"
+    Publisher="@PUBLISHER@"
+    Version="@VERSION@"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>Persistwise</DisplayName>
+    <PublisherDisplayName>@PUBLISHER_NAME@</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+    <Description>A personal web archive that runs on your own computer.</Description>
+  </Properties>
+
+  <Dependencies>
+    <!-- 1809+: WebView2 Evergreen runtime is present on Windows 11 and on supported Windows 10. -->
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <Application Id="Persistwise" Executable="persistwise-desktop.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="Persistwise"
+        Description="Save full copies of web pages and search them offline."
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" Square310x310Logo="Assets\Square310x310Logo.png" />
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <!-- Fetch the pages you save, plus optional Wayback/IPFS backups. -->
+    <Capability Name="internetClient" />
+    <!-- Standard for packaged Win32 desktop apps (Tauri/WebView2). -->
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>

@@ -34,7 +34,8 @@
     }
   },
   "bundle": {
-    "active": false,
+    "active": true,
+    "targets": ["appimage", "nsis"],
     "category": "Productivity",
     "shortDescription": "A personal web archive on your own machine",
     "longDescription": "Save full copies of web pages, browse and search them offline, and optionally back them up to the Wayback Machine and IPFS.",
