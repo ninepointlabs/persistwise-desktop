@@ -7,6 +7,8 @@
 name: Linux
 
 on:
+  push:                    # TEMPORARY: one CI run on the PR branch; removed in the next commit
+    branches: [feat/v0.1]
   release:
     types: [published]
   workflow_dispatch:
@@ -102,7 +104,7 @@ jobs:
   attach:
     # Additive only: uploads the Linux files to the release, never deletes assets.
     needs: build
-    if: github.event_name == 'release' || inputs.tag != ''
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.tag != '')
     runs-on: ubuntu-22.04
     permissions:
       contents: write
