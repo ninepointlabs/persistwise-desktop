@@ -1,11 +1,12 @@
 # Windows: tests, unsigned app build and an MSIX for the Microsoft Store.
 #
-# Manual only (Actions > Windows > Run workflow). Windows is the paid
+# Runs on every pull request, or by hand (Actions > Windows > Run workflow). Windows is the paid
 # edition, so these files are kept as workflow artifacts and are NOT
 # attached to the public GitHub release. Nothing here talks to the Store.
 name: Windows
 
 on:
+  pull_request:
   workflow_dispatch:
 
 permissions:

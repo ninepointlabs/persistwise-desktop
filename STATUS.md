@@ -43,7 +43,7 @@ cargo test --workspace              # tests, no network needed
 pwsh scripts/build-msix.ps1         # Windows: dist\…-x64.msix (needs Windows SDK)
 ```
 
-CI (`.github/workflows/`): `linux.yml` (tests, AppImage on ubuntu-22.04, AppImage checks under xvfb, Flatpak bundle, uploads only AppImage/zsync/sha256/flatpak to a release, additive `--clobber`), `windows.yml` (tests, exe, MSIX as artifacts only). **Both are manual/release-triggered only and have not run yet** (see questions).
+CI (`.github/workflows/`): `linux.yml` (tests, AppImage on ubuntu-22.04, AppImage checks under xvfb, Flatpak bundle, uploads only AppImage/zsync/sha256/flatpak to a release, additive `--clobber`), `windows.yml` (tests, exe, MSIX as artifacts only). Both run on every pull request (Tim, 2026-11-23); Linux also on release.
 
 ## Tests actually run (2026-11-23, on TUF-Omarchy)
 
@@ -72,7 +72,7 @@ CI (`.github/workflows/`): `linux.yml` (tests, AppImage on ubuntu-22.04, AppImag
 - [x] Child env: the app process has the bundled `LD_LIBRARY_PATH`/`GTK_PATH`; `--print-child-env` shows children get the host values back (none of the bundled paths).
 - [x] `--install-desktop-entry` / `--remove-desktop-entry` in a temp `XDG_DATA_HOME`: desktop file + 9 icons created, `Exec` = quoted `$APPIMAGE`, validates; removal leaves no files. Run from an extracted dir it explains and does nothing.
 - [ ] Omarchy dock/Walker grouping with the icon: app_id matches; I did not install the entry into Tim's real menu.
-- [ ] Release dry run in CI: not run (workflows are manual-only, see questions).
+- [ ] Release dry run in CI: not run (the attach job only runs on a published release or a tagged manual run).
 - Size: 104 MB (WebKitGTK + GTK bundled).
 
 ## Packaging status and exact remaining steps
@@ -96,6 +96,20 @@ CI (`.github/workflows/`): `linux.yml` (tests, AppImage on ubuntu-22.04, AppImag
 - Web export: a one-time migration tool, not a feature. Replaced the "Download my archive" proposal with a read-only script that runs once (`tools/web-export/export_archive.rb`, `docs/web-migration.md`).
 - Feed polling: the desktop app does it, with a background option. Done (in-app timer + Linux systemd user timer; Windows/Flatpak check while open for now).
 
+More decisions from Tim (later on 2026-11-23, "yes, yes, yes, yes"):
+
+- Windows background checking via a startup task: done (see below), untested on Windows.
+- First check of a new feed saves everything the feed lists: kept as is.
+- App id `com.ninepointlabs.Persistwise`, binary `persistwise-desktop`, name "Persistwise": kept.
+- Imported copies get their images embedded: done. Each scheduled/"check all" run (and `--poll`) embeds up to 25 imported pages; "Embed images now" does one page. Original saved date kept; if nothing can be fetched (offline) the page is left alone and retried; re-imports never overwrite an embedded copy.
+
+### Windows background checking (compiles; not run on Windows)
+
+- Setting "Keep checking feeds when Persistwise is closed" (`feeds.background`, on by default on Windows).
+- On: closing the window hides it to a tray icon (Open / Check feeds now / Quit); a second launch shows the running window (single-instance plugin).
+- Sign-in start with `--background` (window stays hidden): MSIX declares a `windows.startupTask` with `uap10:Parameters="--background"` (Enabled after first launch; users can turn it off in Settings > Apps > Startup). The plain .exe writes/removes `HKCU\...\Run\Persistwise`. A `--background` start with the setting off exits immediately, so the in-app switch works without the WinRT StartupTask API.
+- Verified only by cross-compiling (`cargo zigbuild --target x86_64-pc-windows-gnu`) and XML-validating the manifest. Needs a real Windows 10/11 test of: tray icon, close-to-tray, second launch, Run key, and the MSIX startup task actually passing `--background`.
+
 ## Import findings (web app read only, `master` @ 703caff)
 
 - Model: `users` → `feeds` (url, name, kind, status, last_polled_at, last_error) → `posts` (guid, url, title, author, published_at, fetched_at, status, local_path) → `archive_records` (original_url, status, wayback_url, wayback_job_id, wayback_submitted_at/failed_at, cid, pin_service, archived_at, pin_failed_at, last_error).
@@ -106,11 +120,7 @@ CI (`.github/workflows/`): `linux.yml` (tests, AppImage on ubuntu-22.04, AppImag
 
 ## Open questions for Tim
 
-1. **CI minutes**: workflows stay manual/release-only (I used a temporary push trigger, removed straight after, to run Linux CI on request). Add `pull_request` triggers? Windows minutes count double.
-2. **Name/ID**: app id `com.ninepointlabs.Persistwise`, binary `persistwise-desktop`, shown as "Persistwise". OK?
-3. **Remote images in imported copies**: allowed in the viewer (viewing makes requests to the original sites). Option later: re-save imported pages so their images are embedded.
-4. **Windows background checking**: in-app only for now. For the Store build, an MSIX startup task (starts minimised at login) is the natural route. Want that before the Store submission?
-5. **First check of a new feed** saves every post the feed lists (matches the web app). Fine, or only posts from now on?
+None right now.
 
 ## Not done / could not do
 

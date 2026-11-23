@@ -1,12 +1,12 @@
 # Linux: tests, AppImage and self-hosted Flatpak bundle.
 #
-# Runs when Tim publishes a release (attaches the Linux files to it), or by
-# hand (Actions > Linux > Run workflow; optional tag to backfill a release).
-# It does not run on every push/PR yet, to keep private-repo Actions minutes
-# in check; add `pull_request:` below when that is wanted.
+# Runs on every pull request (build and checks only), when Tim publishes a
+# release (attaches the Linux files to it), or by hand (Actions > Linux >
+# Run workflow; optional tag to backfill a release).
 name: Linux
 
 on:
+  pull_request:
   release:
     types: [published]
   workflow_dispatch:

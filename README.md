@@ -119,7 +119,9 @@ feeds when Persistwise is closed". That installs a systemd *user* timer on your
 computer (no root) that runs `persistwise-desktop --poll` on the same
 schedule; turning it off removes it. If you move the AppImage, turn the setting
 off and on again. Without systemd, run `persistwise-desktop --poll` from cron.
-The Flatpak and the Windows app check feeds while they are open.
+On Windows the same setting (on by default) keeps Persistwise in the tray
+when you close its window and starts it hidden when you sign in; right-click
+the tray icon to quit. The Flatpak checks feeds while it is open.
 
 ## Moving from the Persistwise website
 
@@ -128,8 +130,11 @@ A one-time step, not an ongoing sync: run the read-only script
 zip, then choose **Import from Persistwise web** in the sidebar (or run
 `persistwise-desktop --import persistwise-export.zip`). Your feeds, posts,
 Wayback and IPFS links and saved copies come over, and the desktop app carries
-on checking the feeds. Importing a fresher export again later updates what
-changed without duplicates. Steps: [docs/web-migration.md](docs/web-migration.md);
+on checking the feeds. The website stored pages without their images, so
+on each feed check Persistwise also fetches and embeds the images and styles
+of a batch of imported pages (or use "Embed images now" on a page); after
+that they open fully offline. Importing a fresher export again later updates
+what changed without duplicates. Steps: [docs/web-migration.md](docs/web-migration.md);
 format: [docs/import-format.md](docs/import-format.md).
 
 ## Known limits (v0.1)
@@ -139,8 +144,9 @@ format: [docs/import-format.md](docs/import-format.md).
   a rendered browser tab. Pages behind a login are saved as a logged-out visitor sees them.
 * Video and audio are linked, not embedded. Very large pages are capped (25 MB
   page, 8 MB per resource, 60 MB per save).
-* Copies imported from the web app keep their original image links (the web
-  app stored HTML only), so their images need the network.
+* Imported copies need the network for their images until Persistwise has
+  embedded them (a batch per feed check), and images that have since vanished
+  from the original site cannot be recovered.
 * No mobile app yet.
 
 ## Build from source
