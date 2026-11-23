@@ -75,7 +75,8 @@ fn capture_makes_a_self_contained_copy() {
     assert!(html.contains("data:image/png;base64,"));
     assert!(
         !html.contains("lazy.png"),
-        "lazy image should be inlined, not linked"
+        "lazy image should be inlined, not linked; failures: {:#?}",
+        c.failed_assets
     );
     assert!(
         !html.contains("hero.png") && !html.contains("inline.png") && !html.contains("favicon.png")

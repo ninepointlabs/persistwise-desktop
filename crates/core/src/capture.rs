@@ -53,6 +53,8 @@ pub struct Captured {
     pub text: String,
     pub assets_inlined: usize,
     pub assets_failed: usize,
+    /// "url: reason" for each resource that could not be inlined.
+    pub failed_assets: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -67,6 +69,8 @@ struct Fetcher {
     opts: CaptureOptions,
     cache: Mutex<HashMap<String, Option<Asset>>>,
     used_bytes: Mutex<usize>,
+    /// (url, reason) for every resource that could not be inlined.
+    failures: Mutex<Vec<(String, String)>>,
 }
 
 impl Fetcher {
@@ -75,18 +79,33 @@ impl Fetcher {
     }
 
     fn fetch_one(&self, url: &str) -> Option<Asset> {
-        if !(url.starts_with("http://") || url.starts_with("https://")) {
-            return None;
-        }
-        {
-            let used = *self.used_bytes.lock().unwrap();
-            if used >= self.opts.max_total_bytes {
-                return None;
+        let started = std::time::Instant::now();
+        match self.try_fetch(url) {
+            Ok(a) => Some(a),
+            Err(reason) => {
+                self.failures.lock().unwrap().push((
+                    url.to_string(),
+                    format!("{reason} (after {:.1}s)", started.elapsed().as_secs_f32()),
+                ));
+                None
             }
         }
-        let resp = self.client.get(url).send().ok()?;
+    }
+
+    fn try_fetch(&self, url: &str) -> Result<Asset, String> {
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
+            return Err("not a web address".into());
+        }
+        if *self.used_bytes.lock().unwrap() >= self.opts.max_total_bytes {
+            return Err("size budget for this page used up".into());
+        }
+        let resp = self
+            .client
+            .get(url)
+            .send()
+            .map_err(|e| format!("request failed: {e:?}"))?;
         if !resp.status().is_success() {
-            return None;
+            return Err(format!("HTTP {}", resp.status().as_u16()));
         }
         let mime = resp
             .headers()
@@ -101,13 +120,14 @@ impl Fetcher {
             })
             .filter(|m| !m.is_empty())
             .unwrap_or_else(|| guess_mime(url).to_string());
-        let bytes = http::read_limited(resp, self.opts.max_asset_bytes).ok()?;
+        let bytes =
+            http::read_limited(resp, self.opts.max_asset_bytes).map_err(|e| format!("{e:#}"))?;
         let mut used = self.used_bytes.lock().unwrap();
         if *used + bytes.len() > self.opts.max_total_bytes {
-            return None;
+            return Err("size budget for this page used up".into());
         }
         *used += bytes.len();
-        Some(Asset {
+        Ok(Asset {
             mime,
             bytes: Arc::new(bytes),
         })
@@ -434,6 +454,7 @@ pub fn capture(url: &str, opts: &CaptureOptions) -> Result<Captured> {
             bytes,
             assets_inlined: 0,
             assets_failed: 0,
+            failed_assets: Vec::new(),
         });
     }
 
@@ -441,25 +462,32 @@ pub fn capture(url: &str, opts: &CaptureOptions) -> Result<Captured> {
     let extracted = textx::extract(&html);
     let out = inline_page(&html, &final_url, client, opts)?;
     Ok(Captured {
-        bytes: out.0.into_bytes(),
+        bytes: out.html.into_bytes(),
         content_type: "text/html".into(),
         ext: "html",
         final_url: final_url.to_string(),
         title: extracted.title,
         text: extracted.text,
-        assets_inlined: out.1,
-        assets_failed: out.2,
+        assets_inlined: out.inlined,
+        assets_failed: out.failed,
+        failed_assets: out.failures,
     })
 }
 
+pub struct Inlined {
+    pub html: String,
+    pub inlined: usize,
+    pub failed: usize,
+    pub failures: Vec<String>,
+}
+
 /// Rewrites an already-fetched HTML document into a self-contained one.
-/// Returns (html, assets inlined, assets that could not be inlined).
 pub fn inline_page(
     html: &str,
     page_url: &Url,
     client: reqwest::blocking::Client,
     opts: &CaptureOptions,
-) -> Result<(String, usize, usize)> {
+) -> Result<Inlined> {
     // Pass 1: collect what the page refers to.
     let base_href: RefCell<Option<String>> = RefCell::new(None);
     let stylesheets: RefCell<Vec<String>> = RefCell::new(Vec::new());
@@ -534,6 +562,7 @@ pub fn inline_page(
         opts: opts.clone(),
         cache: Mutex::new(HashMap::new()),
         used_bytes: Mutex::new(0),
+        failures: Mutex::new(Vec::new()),
     };
 
     // Stylesheets first, then everything they and the page refer to.
@@ -729,7 +758,25 @@ pub fn inline_page(
     let cache = fetcher.cache.lock().unwrap();
     let inlined = cache.values().filter(|v| v.is_some()).count();
     let failed = cache.values().filter(|v| v.is_none()).count();
-    Ok((out, inlined, failed))
+    let mut failures: Vec<String> = fetcher
+        .failures
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(u, r)| format!("{u}: {r}"))
+        .collect();
+    // Resources skipped because the per-page limit on their number was hit.
+    for (u, v) in cache.iter() {
+        if v.is_none() && !failures.iter().any(|f| f.starts_with(&format!("{u}: "))) {
+            failures.push(format!("{u}: skipped (too many resources on this page)"));
+        }
+    }
+    Ok(Inlined {
+        html: out,
+        inlined,
+        failed,
+        failures,
+    })
 }
 
 #[cfg(test)]
