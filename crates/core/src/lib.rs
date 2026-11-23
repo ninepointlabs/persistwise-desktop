@@ -68,7 +68,11 @@ pub fn backup_ipfs(store: &Store, id: i64) -> Result<Page> {
         store.set_ipfs(id, "failed", None, None, Some("the saved copy is missing"))?;
         return store.page(id)?.ok_or_else(|| anyhow!("no such page"));
     };
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("page.html").to_string();
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("page.html")
+        .to_string();
     store.set_ipfs(id, "pending", None, None, None)?;
     match ipfs::pin_file(&s.ipfs, &secrets, &ipfs::Endpoints::default(), &path, &name) {
         Ok(p) => store.set_ipfs(id, "done", Some(&p.cid), Some(p.service), None)?,

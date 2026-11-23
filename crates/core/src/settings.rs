@@ -6,18 +6,12 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
 pub struct Settings {
     /// Tick "Also send to the Wayback Machine" by default when saving.
     pub wayback_on_save: bool,
     pub ipfs: IpfsSettings,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self { wayback_on_save: false, ipfs: IpfsSettings::default() }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -64,7 +58,10 @@ impl IpfsSettings {
             return g.to_string();
         }
         match self.mode {
-            IpfsMode::Kubo if self.kubo_api_url.contains("127.0.0.1") || self.kubo_api_url.contains("localhost") => {
+            IpfsMode::Kubo
+                if self.kubo_api_url.contains("127.0.0.1")
+                    || self.kubo_api_url.contains("localhost") =>
+            {
                 "http://127.0.0.1:8080".into()
             }
             _ => "https://ipfs.filebase.io".into(),
@@ -88,7 +85,11 @@ pub fn load(root: &Path) -> Settings {
 }
 
 pub fn save(root: &Path, s: &Settings) -> Result<()> {
-    write_atomic(&root.join("settings.json"), &serde_json::to_vec_pretty(s)?, false)
+    write_atomic(
+        &root.join("settings.json"),
+        &serde_json::to_vec_pretty(s)?,
+        false,
+    )
 }
 
 pub fn load_secrets(root: &Path) -> Secrets {
@@ -99,7 +100,11 @@ pub fn load_secrets(root: &Path) -> Secrets {
 }
 
 pub fn save_secrets(root: &Path, s: &Secrets) -> Result<()> {
-    write_atomic(&root.join("secrets.json"), &serde_json::to_vec_pretty(s)?, true)
+    write_atomic(
+        &root.join("secrets.json"),
+        &serde_json::to_vec_pretty(s)?,
+        true,
+    )
 }
 
 fn write_atomic(path: &Path, bytes: &[u8], private: bool) -> Result<()> {
@@ -131,19 +136,33 @@ mod tests {
     fn round_trip_and_defaults() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(load(dir.path()), Settings::default());
-        let mut s = Settings::default();
-        s.wayback_on_save = true;
-        s.ipfs.mode = IpfsMode::Kubo;
+        let s = Settings {
+            wayback_on_save: true,
+            ipfs: IpfsSettings {
+                mode: IpfsMode::Kubo,
+                ..Default::default()
+            },
+        };
         save(dir.path(), &s).unwrap();
         assert_eq!(load(dir.path()), s);
         assert_eq!(s.ipfs.gateway_or_default(), "http://127.0.0.1:8080");
 
-        save_secrets(dir.path(), &Secrets { pinata_jwt: Some("abc".into()), kubo_token: None }).unwrap();
+        save_secrets(
+            dir.path(),
+            &Secrets {
+                pinata_jwt: Some("abc".into()),
+                kubo_token: None,
+            },
+        )
+        .unwrap();
         assert_eq!(load_secrets(dir.path()).pinata_jwt.as_deref(), Some("abc"));
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(dir.path().join("secrets.json")).unwrap().permissions().mode();
+            let mode = std::fs::metadata(dir.path().join("secrets.json"))
+                .unwrap()
+                .permissions()
+                .mode();
             assert_eq!(mode & 0o777, 0o600);
         }
     }

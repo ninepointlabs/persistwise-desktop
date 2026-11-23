@@ -5,6 +5,8 @@ use lol_html::html_content::{ContentType, Element, TextChunk};
 use lol_html::{doc_text, element, text, RewriteStrSettings};
 use std::cell::RefCell;
 
+use crate::util;
+
 /// Most text indexed per page. Long pages are cut, not skipped.
 pub const MAX_TEXT_BYTES: usize = 1_000_000;
 
@@ -49,16 +51,16 @@ pub fn extract(html: &str) -> Extracted {
     let _ = lol_html::rewrite_str(
         &stripped,
         lenient().append_document_content_handler(doc_text!(|t| {
-                let mut buf = text.borrow_mut();
-                if buf.len() < MAX_TEXT_BYTES * 2 {
-                    buf.push_str(t.as_str());
-                }
-                Ok(())
-            })),
+            let mut buf = text.borrow_mut();
+            if buf.len() < MAX_TEXT_BYTES * 2 {
+                buf.push_str(t.as_str());
+            }
+            Ok(())
+        })),
     );
 
-    let text = collapse(&decode_entities(&text.into_inner()), MAX_TEXT_BYTES);
-    let title = collapse(&decode_entities(&title.into_inner()), 500);
+    let text = collapse(&util::decode_entities(&text.into_inner()), MAX_TEXT_BYTES);
+    let title = collapse(&util::decode_entities(&title.into_inner()), 500);
     Extracted {
         title: if title.is_empty() { None } else { Some(title) },
         text,
@@ -66,7 +68,9 @@ pub fn extract(html: &str) -> Extracted {
 }
 
 pub(crate) fn lenient<'h, 's>() -> RewriteStrSettings<'h, 's> {
-    RewriteStrSettings::new().with_strict(false).with_enable_esi_tags(false)
+    RewriteStrSettings::new()
+        .with_strict(false)
+        .with_enable_esi_tags(false)
 }
 
 fn collapse(s: &str, max: usize) -> String {
@@ -81,34 +85,6 @@ fn collapse(s: &str, max: usize) -> String {
         out.push_str(word);
     }
     out
-}
-
-/// Decodes the handful of entities that matter for search. Text chunks from
-/// the rewriter are raw source text, so `&amp;` arrives as written.
-fn decode_entities(s: &str) -> String {
-    if !s.contains('&') {
-        return s.to_string();
-    }
-    let re = regex::Regex::new(r"&(#x[0-9a-fA-F]+|#[0-9]+|amp|lt|gt|quot|apos|nbsp|mdash|ndash|hellip|rsquo|lsquo|rdquo|ldquo);").unwrap();
-    re.replace_all(s, |c: &regex::Captures| {
-        let e = &c[1];
-        let ch = match e {
-            "amp" => '&',
-            "lt" => '<',
-            "gt" => '>',
-            "quot" => '"',
-            "apos" | "rsquo" | "lsquo" => '\'',
-            "rdquo" | "ldquo" => '"',
-            "nbsp" => ' ',
-            "mdash" => '—',
-            "ndash" => '–',
-            "hellip" => '…',
-            _ if e.starts_with("#x") => u32::from_str_radix(&e[2..], 16).ok().and_then(char::from_u32).unwrap_or(' '),
-            _ => e[1..].parse::<u32>().ok().and_then(char::from_u32).unwrap_or(' '),
-        };
-        ch.to_string()
-    })
-    .into_owned()
 }
 
 #[cfg(test)]
@@ -128,6 +104,9 @@ mod tests {
         assert!(!e.text.contains("secret"));
         assert!(!e.text.contains("color:red"));
         assert!(!e.text.contains("alert"));
-        assert!(!e.text.contains("Hello & welcome"), "title is stored separately");
+        assert!(
+            !e.text.contains("Hello & welcome"),
+            "title is stored separately"
+        );
     }
 }

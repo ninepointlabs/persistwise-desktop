@@ -156,7 +156,10 @@ impl Store {
             "PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;",
         )?;
         migrate(&conn)?;
-        Ok(Self { root, conn: Mutex::new(conn) })
+        Ok(Self {
+            root,
+            conn: Mutex::new(conn),
+        })
     }
 
     /// The default data directory for this user:
@@ -186,7 +189,9 @@ impl Store {
         let rel = page.local_path.as_deref()?;
         let rel_path = Path::new(rel);
         if rel_path.is_absolute()
-            || rel_path.components().any(|c| !matches!(c, std::path::Component::Normal(_)))
+            || rel_path
+                .components()
+                .any(|c| !matches!(c, std::path::Component::Normal(_)))
             || !rel.starts_with("pages/")
         {
             return None;
@@ -200,7 +205,11 @@ impl Store {
         if uid.len() < 2 || !uid.chars().all(|c| c.is_ascii_hexdigit()) {
             bail!("bad page id");
         }
-        let ext = if ext.chars().all(|c| c.is_ascii_alphanumeric()) && !ext.is_empty() { ext } else { "bin" };
+        let ext = if ext.chars().all(|c| c.is_ascii_alphanumeric()) && !ext.is_empty() {
+            ext
+        } else {
+            "bin"
+        };
         let rel = format!("pages/{}/{}.{}", &uid[..2], uid, ext);
         let abs = self.root.join(&rel);
         std::fs::create_dir_all(abs.parent().unwrap())?;
@@ -211,7 +220,12 @@ impl Store {
     }
 
     /// Inserts a page row with its saved file and search text.
-    pub fn insert_page(&self, new: NewPage, file: Option<(String, i64, String)>, uid: &str) -> Result<Page> {
+    pub fn insert_page(
+        &self,
+        new: NewPage,
+        file: Option<(String, i64, String)>,
+        uid: &str,
+    ) -> Result<Page> {
         let conn = self.conn();
         let saved_at = new.saved_at.clone().unwrap_or_else(util::now);
         let (path, size, sha) = match file {
@@ -231,24 +245,35 @@ impl Store {
         let id = conn.last_insert_rowid();
         index_page(&conn, id, new.title.as_deref(), &new.url, &new.body_text)?;
         drop(conn);
-        self.page(id)?.ok_or_else(|| anyhow!("page vanished after insert"))
+        self.page(id)?
+            .ok_or_else(|| anyhow!("page vanished after insert"))
     }
 
     pub fn page(&self, id: i64) -> Result<Option<Page>> {
         let conn = self.conn();
         let sql = format!("SELECT {PAGE_COLUMNS} FROM pages p LEFT JOIN feeds f ON f.id = p.feed_id WHERE p.id = ?1");
-        Ok(conn.query_row(&sql, [id], |r| page_from_row(r, None)).optional()?)
+        Ok(conn
+            .query_row(&sql, [id], |r| page_from_row(r, None))
+            .optional()?)
     }
 
     pub fn page_by_remote_key(&self, key: &str) -> Result<Option<Page>> {
         let conn = self.conn();
         let sql = format!("SELECT {PAGE_COLUMNS} FROM pages p LEFT JOIN feeds f ON f.id = p.feed_id WHERE p.remote_key = ?1");
-        Ok(conn.query_row(&sql, [key], |r| page_from_row(r, None)).optional()?)
+        Ok(conn
+            .query_row(&sql, [key], |r| page_from_row(r, None))
+            .optional()?)
     }
 
     /// Lists pages, newest first. With a query, runs a full-text search over
     /// title, URL, page text and feed name, best matches first.
-    pub fn list_pages(&self, query: Option<&str>, feed_id: Option<i64>, limit: i64, offset: i64) -> Result<Vec<Page>> {
+    pub fn list_pages(
+        &self,
+        query: Option<&str>,
+        feed_id: Option<i64>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<Page>> {
         let conn = self.conn();
         let fts = query.and_then(fts_query);
         let mut out = Vec::new();
@@ -276,7 +301,8 @@ impl Store {
                      ORDER BY COALESCE(p.published_at, p.saved_at) DESC, p.id DESC LIMIT ?2 OFFSET ?3"
                 );
                 let mut stmt = conn.prepare(&sql)?;
-                let rows = stmt.query_map(params![feed_id, limit, offset], |r| page_from_row(r, None))?;
+                let rows =
+                    stmt.query_map(params![feed_id, limit, offset], |r| page_from_row(r, None))?;
                 for r in rows {
                     out.push(r?);
                 }
@@ -297,7 +323,13 @@ impl Store {
         Ok(())
     }
 
-    pub fn set_wayback(&self, id: i64, status: &str, url: Option<&str>, error: Option<&str>) -> Result<()> {
+    pub fn set_wayback(
+        &self,
+        id: i64,
+        status: &str,
+        url: Option<&str>,
+        error: Option<&str>,
+    ) -> Result<()> {
         self.conn().execute(
             "UPDATE pages SET wayback_status = ?2, wayback_url = COALESCE(?3, wayback_url), wayback_error = ?4, wayback_at = ?5 WHERE id = ?1",
             params![id, status, url, error, util::now()],
@@ -305,7 +337,14 @@ impl Store {
         Ok(())
     }
 
-    pub fn set_ipfs(&self, id: i64, status: &str, cid: Option<&str>, service: Option<&str>, error: Option<&str>) -> Result<()> {
+    pub fn set_ipfs(
+        &self,
+        id: i64,
+        status: &str,
+        cid: Option<&str>,
+        service: Option<&str>,
+        error: Option<&str>,
+    ) -> Result<()> {
         self.conn().execute(
             "UPDATE pages SET ipfs_status = ?2, cid = COALESCE(?3, cid), pin_service = COALESCE(?4, pin_service), ipfs_error = ?5, ipfs_at = ?6 WHERE id = ?1",
             params![id, status, cid, service, error, util::now()],
@@ -315,12 +354,27 @@ impl Store {
 
     /// Updates the metadata of a page that came from an import. Leaves the
     /// local file alone unless `file` is given.
-    pub fn update_imported_page(&self, id: i64, new: &NewPage, file: Option<(String, i64, String)>) -> Result<()> {
+    pub fn update_imported_page(
+        &self,
+        id: i64,
+        new: &NewPage,
+        file: Option<(String, i64, String)>,
+    ) -> Result<()> {
         let conn = self.conn();
         conn.execute(
             "UPDATE pages SET url=?2, title=?3, author=?4, feed_id=?5, guid=?6, published_at=?7, \
              saved_at=COALESCE(?8, saved_at), content_type=?9 WHERE id=?1",
-            params![id, new.url, new.title, new.author, new.feed_id, new.guid, new.published_at, new.saved_at, new.content_type],
+            params![
+                id,
+                new.url,
+                new.title,
+                new.author,
+                new.feed_id,
+                new.guid,
+                new.published_at,
+                new.saved_at,
+                new.content_type
+            ],
         )?;
         if let Some((p, s, h)) = file {
             conn.execute(
@@ -329,9 +383,11 @@ impl Store {
             )?;
         }
         let body: String = if new.body_text.is_empty() {
-            conn.query_row("SELECT body FROM pages_fts WHERE rowid = ?1", [id], |r| r.get(0))
-                .optional()?
-                .unwrap_or_default()
+            conn.query_row("SELECT body FROM pages_fts WHERE rowid = ?1", [id], |r| {
+                r.get(0)
+            })
+            .optional()?
+            .unwrap_or_default()
         } else {
             new.body_text.clone()
         };
@@ -349,12 +405,16 @@ impl Store {
         self.conn().execute(
             "UPDATE pages SET wayback_status=?2, wayback_url=?3, wayback_error=?4, wayback_at=?5, \
              ipfs_status=?6, cid=?7, pin_service=?8, ipfs_error=?9, ipfs_at=?10 WHERE id=?1",
-            params![id, wayback.0, wayback.1, wayback.2, wayback.3, ipfs.0, ipfs.1, ipfs.2, ipfs.3, ipfs.4],
+            params![
+                id, wayback.0, wayback.1, wayback.2, wayback.3, ipfs.0, ipfs.1, ipfs.2, ipfs.3,
+                ipfs.4
+            ],
         )?;
         Ok(())
     }
 
     /// Inserts or updates a feed identified by `remote_key`. Returns (id, created).
+    #[allow(clippy::too_many_arguments)]
     pub fn upsert_feed(
         &self,
         remote_key: &str,
@@ -367,7 +427,11 @@ impl Store {
     ) -> Result<(i64, bool)> {
         let conn = self.conn();
         let existing: Option<i64> = conn
-            .query_row("SELECT id FROM feeds WHERE remote_key = ?1", [remote_key], |r| r.get(0))
+            .query_row(
+                "SELECT id FROM feeds WHERE remote_key = ?1",
+                [remote_key],
+                |r| r.get(0),
+            )
             .optional()?;
         if let Some(id) = existing {
             conn.execute(
@@ -419,12 +483,26 @@ impl Store {
              (SELECT COUNT(*) FROM pages WHERE wayback_url IS NOT NULL), \
              (SELECT COUNT(*) FROM pages WHERE cid IS NOT NULL)",
             [],
-            |r| Ok(Stats { pages: r.get(0)?, feeds: r.get(1)?, bytes: r.get(2)?, wayback_done: r.get(3)?, ipfs_done: r.get(4)? }),
+            |r| {
+                Ok(Stats {
+                    pages: r.get(0)?,
+                    feeds: r.get(1)?,
+                    bytes: r.get(2)?,
+                    wayback_done: r.get(3)?,
+                    ipfs_done: r.get(4)?,
+                })
+            },
         )?)
     }
 }
 
-fn index_page(conn: &Connection, id: i64, title: Option<&str>, url: &str, body: &str) -> Result<()> {
+fn index_page(
+    conn: &Connection,
+    id: i64,
+    title: Option<&str>,
+    url: &str,
+    body: &str,
+) -> Result<()> {
     let feed: Option<String> = conn
         .query_row(
             "SELECT COALESCE(f.name, f.url) FROM pages p JOIN feeds f ON f.id = p.feed_id WHERE p.id = ?1",
@@ -543,8 +621,18 @@ mod tests {
     fn insert_list_search_delete() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path()).unwrap();
-        let a = page(&store, "https://a.test/one", "Gardening notes", "Tomatoes like warm soil and steady water.");
-        let b = page(&store, "https://b.test/two", "Bread", "Sourdough starter needs flour and patience.");
+        let a = page(
+            &store,
+            "https://a.test/one",
+            "Gardening notes",
+            "Tomatoes like warm soil and steady water.",
+        );
+        let b = page(
+            &store,
+            "https://b.test/two",
+            "Bread",
+            "Sourdough starter needs flour and patience.",
+        );
         assert_eq!(store.list_pages(None, None, 50, 0).unwrap().len(), 2);
 
         let hits = store.list_pages(Some("tomat"), None, 50, 0).unwrap();
@@ -554,15 +642,29 @@ mod tests {
         assert!(snip.contains(HIT_START) && snip.contains(HIT_END), "{snip}");
 
         // FTS syntax in user input is treated as text, not an error.
-        assert!(store.list_pages(Some("\"flour\" AND (NEAR"), None, 50, 0).is_ok());
-        assert_eq!(store.list_pages(Some("sourdough patience"), None, 50, 0).unwrap()[0].id, b.id);
-        assert_eq!(store.list_pages(Some("b.test"), None, 50, 0).unwrap().len(), 1);
+        assert!(store
+            .list_pages(Some("\"flour\" AND (NEAR"), None, 50, 0)
+            .is_ok());
+        assert_eq!(
+            store
+                .list_pages(Some("sourdough patience"), None, 50, 0)
+                .unwrap()[0]
+                .id,
+            b.id
+        );
+        assert_eq!(
+            store.list_pages(Some("b.test"), None, 50, 0).unwrap().len(),
+            1
+        );
 
         let path = store.file_path(&a).unwrap();
         assert!(path.exists());
         store.delete_page(a.id).unwrap();
         assert!(!path.exists());
-        assert!(store.list_pages(Some("tomatoes"), None, 50, 0).unwrap().is_empty());
+        assert!(store
+            .list_pages(Some("tomatoes"), None, 50, 0)
+            .unwrap()
+            .is_empty());
         assert_eq!(store.stats().unwrap().pages, 1);
     }
 
@@ -585,6 +687,9 @@ mod tests {
             page(&store, "https://a.test/", "Kept", "still here");
         }
         let store = Store::open(dir.path()).unwrap();
-        assert_eq!(store.list_pages(Some("still"), None, 10, 0).unwrap().len(), 1);
+        assert_eq!(
+            store.list_pages(Some("still"), None, 10, 0).unwrap().len(),
+            1
+        );
     }
 }

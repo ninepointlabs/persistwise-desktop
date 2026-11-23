@@ -1,0 +1,56 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Persistwise",
+  "mainBinaryName": "persistwise-desktop",
+  "version": "0.1.0",
+  "identifier": "com.ninepointlabs.Persistwise",
+  "build": {
+    "frontendDist": "../ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Persistwise",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 760,
+        "minHeight": 520
+      }
+    ],
+    "security": {
+      "csp": {
+        "default-src": "'self'",
+        "img-src": "'self' data:",
+        "style-src": "'self' 'unsafe-inline'",
+        "script-src": "'self'",
+        "frame-src": "pwcopy: http://pwcopy.localhost https://pwcopy.localhost",
+        "connect-src": "ipc: http://ipc.localhost pwcopy: http://pwcopy.localhost",
+        "object-src": "'none'",
+        "base-uri": "'none'",
+        "form-action": "'none'"
+      }
+    }
+  },
+  "bundle": {
+    "active": false,
+    "category": "Productivity",
+    "shortDescription": "A personal web archive on your own machine",
+    "longDescription": "Save full copies of web pages, browse and search them offline, and optionally back them up to the Wayback Machine and IPFS.",
+    "publisher": "Nine Point Labs",
+    "copyright": "Copyright (c) 2026 Nine Point Labs",
+    "license": "MIT",
+    "homepage": "https://github.com/ninepointlabs/persistwise-desktop",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true }
+    }
+  }
+}

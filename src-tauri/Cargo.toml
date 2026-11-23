@@ -1,0 +1,28 @@
+[package]
+name = "persistwise-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Persistwise Desktop: a personal web archive that runs entirely on your own machine."
+default-run = "persistwise-desktop"
+
+[[bin]]
+name = "persistwise-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = "2"
+
+[dependencies]
+anyhow = "1.0.105"
+persistwise-core = { path = "../crates/core" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Same glib Tauri/GTK already link; used only to set the program name so the
+# Wayland app_id and X11 WM_CLASS match the desktop file id.
+glib = "0.18"

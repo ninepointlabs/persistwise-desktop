@@ -92,7 +92,13 @@ impl Fetcher {
             .headers()
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
-            .map(|v| v.split(';').next().unwrap_or("").trim().to_ascii_lowercase())
+            .map(|v| {
+                v.split(';')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .to_ascii_lowercase()
+            })
             .filter(|m| !m.is_empty())
             .unwrap_or_else(|| guess_mime(url).to_string());
         let bytes = http::read_limited(resp, self.opts.max_asset_bytes).ok()?;
@@ -101,19 +107,28 @@ impl Fetcher {
             return None;
         }
         *used += bytes.len();
-        Some(Asset { mime, bytes: Arc::new(bytes) })
+        Some(Asset {
+            mime,
+            bytes: Arc::new(bytes),
+        })
     }
 
     /// Fetches every URL not already cached, a few at a time.
     fn fetch_all(&self, urls: Vec<String>) {
         let mut todo: Vec<String> = {
             let cache = self.cache.lock().unwrap();
-            let mut v: Vec<String> = urls.into_iter().filter(|u| !cache.contains_key(u)).collect();
+            let mut v: Vec<String> = urls
+                .into_iter()
+                .filter(|u| !cache.contains_key(u))
+                .collect();
             v.sort();
             v.dedup();
             v
         };
-        let room = self.opts.max_assets.saturating_sub(self.cache.lock().unwrap().len());
+        let room = self
+            .opts
+            .max_assets
+            .saturating_sub(self.cache.lock().unwrap().len());
         if todo.len() > room {
             for u in todo.split_off(room) {
                 self.cache.lock().unwrap().insert(u, None);
@@ -167,9 +182,14 @@ impl Fetcher {
     /// inlined data: stylesheets.
     fn rewrite_css(&self, css: &str, base: &Url, depth: usize) -> String {
         let css = import_re().replace_all(css, |c: &regex::Captures| {
-            let raw = (1..=5).find_map(|i| c.get(i)).map(|m| m.as_str()).unwrap_or("");
+            let raw = (1..=5)
+                .find_map(|i| c.get(i))
+                .map(|m| m.as_str())
+                .unwrap_or("");
             let rest = c.get(6).map(|m| m.as_str()).unwrap_or("");
-            let Some(abs) = resolve(raw, base) else { return c[0].to_string() };
+            let Some(abs) = resolve(raw, base) else {
+                return c[0].to_string();
+            };
             if depth < 3 {
                 if let (Some(text), Ok(u)) = (self.css_text(&abs), Url::parse(&abs)) {
                     let inner = self.rewrite_css(&text, &u, depth + 1);
@@ -181,7 +201,12 @@ impl Fetcher {
         });
         url_re()
             .replace_all(&css, |c: &regex::Captures| {
-                let raw = c.get(1).or_else(|| c.get(2)).or_else(|| c.get(3)).map(|m| m.as_str()).unwrap_or("");
+                let raw = c
+                    .get(1)
+                    .or_else(|| c.get(2))
+                    .or_else(|| c.get(3))
+                    .map(|m| m.as_str())
+                    .unwrap_or("");
                 match resolve(raw, base) {
                     Some(abs) => match self.data_uri(&abs) {
                         Some(d) => format!("url(\"{d}\")"),
@@ -196,7 +221,9 @@ impl Fetcher {
 
 fn url_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r#"(?i)url\(\s*(?:"([^"]*)"|'([^']*)'|([^)'"\s]*))\s*\)"#).unwrap())
+    RE.get_or_init(|| {
+        Regex::new(r#"(?i)url\(\s*(?:"([^"]*)"|'([^']*)'|([^)'"\s]*))\s*\)"#).unwrap()
+    })
 }
 
 fn import_re() -> &'static Regex {
@@ -211,7 +238,10 @@ fn import_re() -> &'static Regex {
 fn css_refs(css: &str, base: &Url) -> (Vec<String>, Vec<String>) {
     let mut imports = Vec::new();
     for c in import_re().captures_iter(css) {
-        let raw = (1..=5).find_map(|i| c.get(i)).map(|m| m.as_str()).unwrap_or("");
+        let raw = (1..=5)
+            .find_map(|i| c.get(i))
+            .map(|m| m.as_str())
+            .unwrap_or("");
         if let Some(a) = resolve(raw, base) {
             imports.push(a);
         }
@@ -239,11 +269,17 @@ fn resolve(raw: &str, base: &Url) -> Option<String> {
 }
 
 fn css_escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "")
+    s.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "")
 }
 
 fn guess_mime(url: &str) -> &'static str {
-    let path = url.split(['?', '#']).next().unwrap_or("").to_ascii_lowercase();
+    let path = url
+        .split(['?', '#'])
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
     let ext = path.rsplit('.').next().unwrap_or("");
     match ext {
         "png" => "image/png",
@@ -286,7 +322,10 @@ fn best_srcset(srcset: &str) -> Option<String> {
     re.captures_iter(srcset.trim())
         .filter(|c| !c[1].starts_with("data:"))
         .map(|c| {
-            let n: f64 = c.get(2).and_then(|m| m.as_str().parse().ok()).unwrap_or(1.0);
+            let n: f64 = c
+                .get(2)
+                .and_then(|m| m.as_str().parse().ok())
+                .unwrap_or(1.0);
             (n, c[1].trim_end_matches(',').to_string())
         })
         .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
@@ -296,10 +335,10 @@ fn best_srcset(srcset: &str) -> Option<String> {
 /// The image URL an <img> really shows, looking past lazy-loading
 /// placeholders (`data-src` and friends), which never load without scripts.
 fn img_source(el: &Element) -> Option<String> {
-    let src = el.get_attribute("src").filter(|s| !s.trim().is_empty());
+    let src = attr(el, "src").filter(|s| !s.trim().is_empty());
     let lazy = ["data-src", "data-lazy-src", "data-original", "data-url"]
         .iter()
-        .find_map(|a| el.get_attribute(a))
+        .find_map(|a| attr(el, a))
         .filter(|s| !s.trim().is_empty());
     match (src, lazy) {
         (Some(s), Some(l)) if s.starts_with("data:") => Some(l),
@@ -307,14 +346,27 @@ fn img_source(el: &Element) -> Option<String> {
         (None, Some(l)) => Some(l),
         (None, None) => el
             .get_attribute("srcset")
-            .or_else(|| el.get_attribute("data-srcset"))
+            .or_else(|| attr(el, "data-srcset"))
             .and_then(|s| best_srcset(&s)),
     }
 }
 
+/// An attribute value with entities decoded (lol_html returns raw source).
+fn attr(el: &Element, name: &str) -> Option<String> {
+    el.get_attribute(name).map(|v| util::decode_entities(&v))
+}
+
+/// Sets an attribute, escaping `&` (lol_html only escapes quotes).
+fn set(el: &mut Element, name: &str, value: &str) {
+    let _ = el.set_attribute(name, &util::attr_escape(value));
+}
+
 fn is_rel(el: &Element, want: &[&str]) -> bool {
-    el.get_attribute("rel")
-        .map(|r| r.split_ascii_whitespace().any(|t| want.iter().any(|w| t.eq_ignore_ascii_case(w))))
+    attr(el, "rel")
+        .map(|r| {
+            r.split_ascii_whitespace()
+                .any(|t| want.iter().any(|w| t.eq_ignore_ascii_case(w)))
+        })
         .unwrap_or(false)
 }
 
@@ -325,7 +377,12 @@ pub fn capture(url: &str, opts: &CaptureOptions) -> Result<Captured> {
         bail!("only http and https pages can be saved");
     }
     let client = http::client(opts.timeout)?;
-    let resp = client.get(parsed.as_str()).send().with_context(|| format!("could not reach {}", parsed.host_str().unwrap_or("the site")))?;
+    let resp = client.get(parsed.as_str()).send().with_context(|| {
+        format!(
+            "could not reach {}",
+            parsed.host_str().unwrap_or("the site")
+        )
+    })?;
     let status = resp.status();
     if !status.is_success() {
         bail!("the site answered HTTP {}", status.as_u16());
@@ -338,20 +395,33 @@ pub fn capture(url: &str, opts: &CaptureOptions) -> Result<Captured> {
         .map(str::to_string);
     let mime = header_ct
         .as_deref()
-        .map(|v| v.split(';').next().unwrap_or("").trim().to_ascii_lowercase())
+        .map(|v| {
+            v.split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_ascii_lowercase()
+        })
         .unwrap_or_default();
     let bytes = http::read_limited(resp, opts.max_page_bytes)?;
 
     let is_html = mime.contains("html") || (mime.is_empty() && util::looks_like_html(&bytes));
     if !is_html {
-        let ct = if mime.is_empty() { "application/octet-stream".to_string() } else { mime };
+        let ct = if mime.is_empty() {
+            "application/octet-stream".to_string()
+        } else {
+            mime
+        };
         let name = final_url
             .path_segments()
             .and_then(|mut s| s.next_back().map(str::to_string))
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| final_url.host_str().unwrap_or("download").to_string());
         let text = if ct.starts_with("text/") {
-            String::from_utf8_lossy(&bytes).chars().take(textx::MAX_TEXT_BYTES).collect()
+            String::from_utf8_lossy(&bytes)
+                .chars()
+                .take(textx::MAX_TEXT_BYTES)
+                .collect()
         } else {
             String::new()
         };
@@ -403,12 +473,12 @@ pub fn inline_page(
             .append_element_content_handler(element!("base[href]", |el: &mut Element| {
                 let mut b = base_href.borrow_mut();
                 if b.is_none() {
-                    *b = el.get_attribute("href");
+                    *b = attr(el, "href");
                 }
                 Ok(())
             }))
             .append_element_content_handler(element!("link[href]", |el: &mut Element| {
-                let href = el.get_attribute("href").unwrap_or_default();
+                let href = attr(el, "href").unwrap_or_default();
                 if is_rel(el, &["stylesheet"]) {
                     stylesheets.borrow_mut().push(href);
                 } else if is_rel(el, &["icon", "apple-touch-icon"]) {
@@ -416,22 +486,31 @@ pub fn inline_page(
                 }
                 Ok(())
             }))
-            .append_element_content_handler(element!("img, input[type=image]", |el: &mut Element| {
-                if let Some(s) = img_source(el) {
-                    images.borrow_mut().push(s);
+            .append_element_content_handler(element!(
+                "img, input[type=image]",
+                |el: &mut Element| {
+                    if let Some(s) = img_source(el) {
+                        images.borrow_mut().push(s);
+                    }
+                    Ok(())
                 }
-                Ok(())
-            }))
+            ))
             .append_element_content_handler(element!("video[poster]", |el: &mut Element| {
-                images.borrow_mut().push(el.get_attribute("poster").unwrap_or_default());
+                images
+                    .borrow_mut()
+                    .push(attr(el, "poster").unwrap_or_default());
                 Ok(())
             }))
             .append_element_content_handler(element!("[background]", |el: &mut Element| {
-                images.borrow_mut().push(el.get_attribute("background").unwrap_or_default());
+                images
+                    .borrow_mut()
+                    .push(attr(el, "background").unwrap_or_default());
                 Ok(())
             }))
             .append_element_content_handler(element!("[style]", |el: &mut Element| {
-                inline_css.borrow_mut().push(el.get_attribute("style").unwrap_or_default());
+                inline_css
+                    .borrow_mut()
+                    .push(attr(el, "style").unwrap_or_default());
                 Ok(())
             }))
             .append_element_content_handler(text!("style", |t: &mut TextChunk| {
@@ -458,7 +537,11 @@ pub fn inline_page(
     };
 
     // Stylesheets first, then everything they and the page refer to.
-    let sheet_urls: Vec<String> = stylesheets.borrow().iter().filter_map(|s| resolve(s, &base)).collect();
+    let sheet_urls: Vec<String> = stylesheets
+        .borrow()
+        .iter()
+        .filter_map(|s| resolve(s, &base))
+        .collect();
     fetcher.fetch_all(sheet_urls.clone());
     for s in &sheet_urls {
         if let (Some(text), Ok(u)) = (fetcher.css_text(s), Url::parse(s)) {
@@ -468,7 +551,13 @@ pub fn inline_page(
     for css in inline_css.borrow().iter() {
         fetcher.prefetch_css(css, &base, 0);
     }
-    fetcher.fetch_all(images.borrow().iter().filter_map(|s| resolve(s, &base)).collect());
+    fetcher.fetch_all(
+        images
+            .borrow()
+            .iter()
+            .filter_map(|s| resolve(s, &base))
+            .collect(),
+    );
 
     let processed_sheets: HashMap<String, String> = sheet_urls
         .iter()
@@ -482,9 +571,9 @@ pub fn inline_page(
     // Pass 2: rewrite.
     let style_buf = RefCell::new(String::new());
     let absolutize_attr = |el: &mut Element, name: &str| {
-        if let Some(v) = el.get_attribute(name) {
+        if let Some(v) = attr(el, name) {
             if let Some(abs) = util::absolutize(&v, &base) {
-                let _ = el.set_attribute(name, &abs);
+                set(el, name, &abs);
             }
         }
     };
@@ -502,7 +591,7 @@ pub fn inline_page(
                 Ok(())
             }))
             .append_element_content_handler(element!("meta[http-equiv]", |el: &mut Element| {
-                let he = el.get_attribute("http-equiv").unwrap_or_default().to_ascii_lowercase();
+                let he = attr(el, "http-equiv").unwrap_or_default().to_ascii_lowercase();
                 if matches!(he.as_str(), "refresh" | "content-security-policy" | "content-type" | "set-cookie") {
                     el.remove();
                 }
@@ -523,7 +612,7 @@ pub fn inline_page(
                     el.remove_attribute(&n);
                 }
                 for name in ["href", "src", "action", "cite", "data", "formaction"] {
-                    if let Some(v) = el.get_attribute(name) {
+                    if let Some(v) = attr(el, name) {
                         if v.trim_start().to_ascii_lowercase().starts_with("javascript:") {
                             el.remove_attribute(name);
                         }
@@ -532,7 +621,7 @@ pub fn inline_page(
                 Ok(())
             }))
             .append_element_content_handler(element!("link[href]", |el: &mut Element| {
-                let href = el.get_attribute("href").unwrap_or_default();
+                let href = attr(el, "href").unwrap_or_default();
                 let abs = resolve(&href, &base);
                 if is_rel(el, &["stylesheet"]) {
                     if let Some(css) = abs.as_ref().and_then(|a| processed_sheets.get(a)) {
@@ -546,12 +635,12 @@ pub fn inline_page(
                     }
                 } else if is_rel(el, &["icon", "apple-touch-icon"]) {
                     if let Some(d) = abs.as_ref().and_then(|a| fetcher.data_uri(a)) {
-                        let _ = el.set_attribute("href", &d);
+                        set(el, "href", &d);
                         return Ok(());
                     }
                 }
                 if let Some(a) = abs {
-                    let _ = el.set_attribute("href", &a);
+                    set(el, "href", &a);
                 }
                 Ok(())
             }))
@@ -563,16 +652,16 @@ pub fn inline_page(
                 if let Some(src) = chosen.as_deref().and_then(|s| resolve(s, &base)) {
                     match fetcher.data_uri(&src) {
                         Some(d) => {
-                            let _ = el.set_attribute("src", &d);
+                            set(el, "src", &d);
                             el.remove_attribute("srcset");
                             el.remove_attribute("sizes");
                         }
                         None => {
-                            let _ = el.set_attribute("src", &src);
+                            set(el, "src", &src);
                         }
                     }
                 }
-                if let Some(ss) = el.get_attribute("srcset") {
+                if let Some(ss) = attr(el, "srcset") {
                     let fixed: Vec<String> = ss
                         .split(',')
                         .map(|c| {
@@ -582,7 +671,7 @@ pub fn inline_page(
                             if d.is_empty() { u } else { format!("{u} {}", d.trim()) }
                         })
                         .collect();
-                    let _ = el.set_attribute("srcset", &fixed.join(", "));
+                    set(el, "srcset", &fixed.join(", "));
                 }
                 Ok(())
             }))
@@ -592,23 +681,23 @@ pub fn inline_page(
                 Ok(())
             }))
             .append_element_content_handler(element!("video[poster]", |el: &mut Element| {
-                if let Some(src) = el.get_attribute("poster").and_then(|p| resolve(&p, &base)) {
+                if let Some(src) = attr(el, "poster").and_then(|p| resolve(&p, &base)) {
                     let v = fetcher.data_uri(&src).unwrap_or(src);
-                    let _ = el.set_attribute("poster", &v);
+                    set(el, "poster", &v);
                 }
                 Ok(())
             }))
             .append_element_content_handler(element!("[background]", |el: &mut Element| {
-                if let Some(src) = el.get_attribute("background").and_then(|p| resolve(&p, &base)) {
+                if let Some(src) = attr(el, "background").and_then(|p| resolve(&p, &base)) {
                     let v = fetcher.data_uri(&src).unwrap_or(src);
-                    let _ = el.set_attribute("background", &v);
+                    set(el, "background", &v);
                 }
                 Ok(())
             }))
             .append_element_content_handler(element!("a[href], area[href]", |el: &mut Element| {
                 absolutize_attr(el, "href");
-                let _ = el.set_attribute("target", "_blank");
-                let _ = el.set_attribute("rel", "noopener noreferrer");
+                set(el, "target", "_blank");
+                set(el, "rel", "noopener noreferrer");
                 Ok(())
             }))
             .append_element_content_handler(element!("iframe[src], frame[src], embed[src], audio[src], video[src], source[src], track[src], object[data], form[action], blockquote[cite], q[cite]", |el: &mut Element| {
@@ -618,8 +707,8 @@ pub fn inline_page(
                 Ok(())
             }))
             .append_element_content_handler(element!("[style]", |el: &mut Element| {
-                if let Some(s) = el.get_attribute("style") {
-                    let _ = el.set_attribute("style", &fetcher.rewrite_css(&s, &base, 0));
+                if let Some(s) = attr(el, "style") {
+                    set(el, "style", &fetcher.rewrite_css(&s, &base, 0));
                 }
                 Ok(())
             }))
@@ -649,7 +738,10 @@ mod tests {
 
     #[test]
     fn srcset_picks_largest() {
-        assert_eq!(best_srcset("a.jpg 320w, b.jpg 1024w, c.jpg 640w").as_deref(), Some("b.jpg"));
+        assert_eq!(
+            best_srcset("a.jpg 320w, b.jpg 1024w, c.jpg 640w").as_deref(),
+            Some("b.jpg")
+        );
         assert_eq!(best_srcset("a.jpg 1x, b.jpg 2x").as_deref(), Some("b.jpg"));
         assert_eq!(best_srcset("only.jpg").as_deref(), Some("only.jpg"));
     }
@@ -661,7 +753,10 @@ mod tests {
             r#"@import "reset.css"; @import url('/theme.css') screen; body{background:url(bg.png)} .a{background:url("data:image/png;base64,AA")}"#,
             &base,
         );
-        assert_eq!(imps, vec!["https://x.test/css/reset.css", "https://x.test/theme.css"]);
+        assert_eq!(
+            imps,
+            vec!["https://x.test/css/reset.css", "https://x.test/theme.css"]
+        );
         assert_eq!(urls, vec!["https://x.test/css/bg.png"]);
     }
 }

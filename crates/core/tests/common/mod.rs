@@ -12,10 +12,18 @@ pub struct Reply {
 
 impl Reply {
     pub fn ok(ct: &str, body: impl Into<Vec<u8>>) -> Self {
-        Self { status: 200, headers: vec![("Content-Type".into(), ct.into())], body: body.into() }
+        Self {
+            status: 200,
+            headers: vec![("Content-Type".into(), ct.into())],
+            body: body.into(),
+        }
     }
     pub fn status(status: u16) -> Self {
-        Self { status, headers: vec![], body: Vec::new() }
+        Self {
+            status,
+            headers: vec![],
+            body: Vec::new(),
+        }
     }
     pub fn header(mut self, k: &str, v: &str) -> Self {
         self.headers.push((k.into(), v.into()));
@@ -54,30 +62,45 @@ impl Server {
                 seen2.lock().unwrap().push(Seen {
                     method: method.clone(),
                     url: url.clone(),
-                    headers: req.headers().iter().map(|h| (h.field.to_string(), h.value.to_string())).collect(),
+                    headers: req
+                        .headers()
+                        .iter()
+                        .map(|h| (h.field.to_string(), h.value.to_string()))
+                        .collect(),
                     body,
                 });
                 let r = handler(&method, &url);
                 let mut resp = tiny_http::Response::from_data(r.body).with_status_code(r.status);
                 for (k, v) in r.headers {
-                    resp.add_header(tiny_http::Header::from_bytes(k.as_bytes(), v.as_bytes()).unwrap());
+                    resp.add_header(
+                        tiny_http::Header::from_bytes(k.as_bytes(), v.as_bytes()).unwrap(),
+                    );
                 }
                 let _ = req.respond(resp);
             }
         });
-        Self { base: format!("http://127.0.0.1:{port}"), seen }
+        Self {
+            base: format!("http://127.0.0.1:{port}"),
+            seen,
+        }
     }
 
     pub fn requests_to(&self, path_prefix: &str) -> Vec<Seen> {
-        self.seen.lock().unwrap().iter().filter(|s| s.url.starts_with(path_prefix)).cloned().collect()
+        self.seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| s.url.starts_with(path_prefix))
+            .cloned()
+            .collect()
     }
 }
 
-
 /// 1x1 transparent PNG.
 pub const PNG: &[u8] = &[
-    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00,
-    0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0d, 0x49,
-    0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00,
-    0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+    0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
+    0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae,
+    0x42, 0x60, 0x82,
 ];

@@ -126,6 +126,47 @@ pub fn mask_secret(secret: &str) -> String {
     format!("••••{tail}")
 }
 
+/// Decodes the handful of entities that matter for search. Text chunks from
+/// the rewriter (and attribute values) are raw source text, so `&amp;` arrives as written.
+pub fn decode_entities(s: &str) -> String {
+    if !s.contains('&') {
+        return s.to_string();
+    }
+    let re = regex::Regex::new(r"&(#x[0-9a-fA-F]+|#[0-9]+|amp|lt|gt|quot|apos|nbsp|mdash|ndash|hellip|rsquo|lsquo|rdquo|ldquo);").unwrap();
+    re.replace_all(s, |c: &regex::Captures| {
+        let e = &c[1];
+        let ch = match e {
+            "amp" => '&',
+            "lt" => '<',
+            "gt" => '>',
+            "quot" => '"',
+            "apos" | "rsquo" | "lsquo" => '\'',
+            "rdquo" | "ldquo" => '"',
+            "nbsp" => ' ',
+            "mdash" => '—',
+            "ndash" => '–',
+            "hellip" => '…',
+            _ if e.starts_with("#x") => u32::from_str_radix(&e[2..], 16)
+                .ok()
+                .and_then(char::from_u32)
+                .unwrap_or(' '),
+            _ => e[1..]
+                .parse::<u32>()
+                .ok()
+                .and_then(char::from_u32)
+                .unwrap_or(' '),
+        };
+        ch.to_string()
+    })
+    .into_owned()
+}
+
+/// Makes a value safe to hand to lol_html's `set_attribute`, which only
+/// escapes quotes.
+pub fn attr_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,9 +174,18 @@ mod tests {
     #[test]
     fn absolutize_leaves_schemes_and_fragments() {
         let base = Url::parse("https://example.com/a/b.html").unwrap();
-        assert_eq!(absolutize("img.png", &base).unwrap(), "https://example.com/a/img.png");
-        assert_eq!(absolutize("/x.css", &base).unwrap(), "https://example.com/x.css");
-        assert_eq!(absolutize("//cdn.test/y.js", &base).unwrap(), "https://cdn.test/y.js");
+        assert_eq!(
+            absolutize("img.png", &base).unwrap(),
+            "https://example.com/a/img.png"
+        );
+        assert_eq!(
+            absolutize("/x.css", &base).unwrap(),
+            "https://example.com/x.css"
+        );
+        assert_eq!(
+            absolutize("//cdn.test/y.js", &base).unwrap(),
+            "https://cdn.test/y.js"
+        );
         assert!(absolutize("data:image/png;base64,AAA", &base).is_none());
         assert!(absolutize("mailto:a@b.c", &base).is_none());
         assert!(absolutize("#top", &base).is_none());
@@ -146,7 +196,19 @@ mod tests {
     fn decode_honours_meta_charset() {
         let bytes = b"<html><head><meta charset=\"iso-8859-1\"></head><body>caf\xe9</body></html>";
         assert!(decode_html(bytes, None).contains("café"));
-        assert!(decode_html("<p>café</p>".as_bytes(), Some("text/html; charset=utf-8")).contains("café"));
+        assert!(
+            decode_html("<p>café</p>".as_bytes(), Some("text/html; charset=utf-8"))
+                .contains("café")
+        );
+    }
+
+    #[test]
+    fn entities_round_trip_for_attributes() {
+        assert_eq!(
+            decode_entities("/w/load.php?lang=en&amp;modules=a%7Cb&#38;x=1"),
+            "/w/load.php?lang=en&modules=a%7Cb&x=1"
+        );
+        assert_eq!(attr_escape("a?b=1&c=2"), "a?b=1&amp;c=2");
     }
 
     #[test]

@@ -119,7 +119,8 @@ impl Source_ {
         if path.is_dir() {
             return Ok(Self::Dir(path.to_path_buf()));
         }
-        let f = std::fs::File::open(path).with_context(|| format!("could not open {}", path.display()))?;
+        let f = std::fs::File::open(path)
+            .with_context(|| format!("could not open {}", path.display()))?;
         let z = zip::ZipArchive::new(f).map_err(|_| anyhow!("that file is not a zip export"))?;
         Ok(Self::Zip(z))
     }
@@ -139,11 +140,18 @@ impl Source_ {
             }
             Self::Zip(z) => {
                 // Also accept exports whose files sit inside one top folder.
-                let names: Vec<String> = z.file_names().filter_map(|n| n.ok().map(|n| n.into_owned())).collect();
+                let names: Vec<String> = z
+                    .file_names()
+                    .filter_map(|n| n.ok().map(|n| n.into_owned()))
+                    .collect();
                 let found = names
                     .iter()
                     .find(|n| n.as_str() == rel)
-                    .or_else(|| names.iter().find(|n| n.split_once('/').map(|(_, r)| r) == Some(rel.as_str())))
+                    .or_else(|| {
+                        names
+                            .iter()
+                            .find(|n| n.split_once('/').map(|(_, r)| r) == Some(rel.as_str()))
+                    })
                     .cloned();
                 let Some(found) = found else { return Ok(None) };
                 let entry = z.by_name(&found)?;
@@ -185,10 +193,16 @@ fn parse_manifest(src: &mut Source_) -> Result<Manifest> {
         .ok_or_else(|| anyhow!("no manifest.json in the export"))?;
     let m: Manifest = serde_json::from_slice(&bytes).context("manifest.json is not valid")?;
     if m.format != FORMAT {
-        bail!("this is not a Persistwise export (format is {:?})", m.format);
+        bail!(
+            "this is not a Persistwise export (format is {:?})",
+            m.format
+        );
     }
     if m.version != VERSION {
-        bail!("this export is version {}; this app reads version {VERSION}", m.version);
+        bail!(
+            "this export is version {}; this app reads version {VERSION}",
+            m.version
+        );
     }
     Ok(m)
 }
@@ -197,7 +211,12 @@ fn parse_manifest(src: &mut Source_) -> Result<Manifest> {
 pub fn import(store: &Store, path: &Path) -> Result<Report> {
     let mut src = Source_::open(path)?;
     let m = parse_manifest(&mut src)?;
-    let host = m.source.host.clone().filter(|h| !h.trim().is_empty()).unwrap_or_else(|| "persistwise.com".into());
+    let host = m
+        .source
+        .host
+        .clone()
+        .filter(|h| !h.trim().is_empty())
+        .unwrap_or_else(|| "persistwise.com".into());
     let mut report = Report::default();
     let mut feed_ids = std::collections::HashMap::new();
 
@@ -222,7 +241,9 @@ pub fn import(store: &Store, path: &Path) -> Result<Report> {
 
     for p in &m.posts {
         if let Err(e) = import_post(store, &mut src, &host, p, &feed_ids, &mut report) {
-            report.problems.push(format!("post {} ({}): {e:#}", p.id, p.url));
+            report
+                .problems
+                .push(format!("post {} ({}): {e:#}", p.id, p.url));
         }
     }
     Ok(report)
@@ -286,7 +307,10 @@ fn import_post(
     let page = match existing {
         Some(page) => {
             let file = match &copy {
-                Some((bytes, sha)) if page.sha256.as_deref() != Some(sha.as_str()) || store.file_path(&page).is_none() => {
+                Some((bytes, sha))
+                    if page.sha256.as_deref() != Some(sha.as_str())
+                        || store.file_path(&page).is_none() =>
+                {
                     report.copies_saved += 1;
                     Some(store.write_file(&page.uid, ext, bytes)?)
                 }
@@ -316,7 +340,9 @@ fn import_post(
 
     // Wayback and IPFS results exactly as the web app recorded them.
     let ar = p.archive_record.as_ref();
-    let wb_url = ar.and_then(|a| a.wayback_url.as_deref()).filter(|s| !s.is_empty());
+    let wb_url = ar
+        .and_then(|a| a.wayback_url.as_deref())
+        .filter(|s| !s.is_empty());
     let cid = ar.and_then(|a| a.cid.as_deref()).filter(|s| !s.is_empty());
     let err = ar.and_then(|a| a.last_error.as_deref());
     let wb_status = match (wb_url, ar.and_then(|a| a.wayback_failed_at.as_deref())) {
@@ -331,7 +357,12 @@ fn import_post(
     };
     store.set_backup_fields(
         page.id,
-        (wb_status, wb_url, if wb_status == "failed" { err } else { None }, ar.and_then(|a| a.wayback_submitted_at.as_deref())),
+        (
+            wb_status,
+            wb_url,
+            if wb_status == "failed" { err } else { None },
+            ar.and_then(|a| a.wayback_submitted_at.as_deref()),
+        ),
         (
             ipfs_status,
             cid,
