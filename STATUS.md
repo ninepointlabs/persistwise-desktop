@@ -3,7 +3,7 @@
 STATUS: PR open, ready for Tim to review (not merged, not tagged, nothing released or submitted)
 
 - Repo (private): https://github.com/ninepointlabs/persistwise-desktop
-- PR: see the PR link at the bottom of this file (feat/v0.1 → main)
+- PR (open, unmerged): https://github.com/ninepointlabs/persistwise-desktop/pull/1 (feat/v0.1 → main)
 - `main` holds only a stub README and the MIT LICENSE. All work is on `feat/v0.1`.
 - Last updated: 2026-11-23
 
@@ -116,4 +116,4 @@ CI (`.github/workflows/`): `linux.yml` (tests, AppImage on ubuntu-22.04, AppImag
 
 ## PR
 
-PR: (filled in below after opening)
+https://github.com/ninepointlabs/persistwise-desktop/pull/1 — open, not merged. Merging, tagging, releasing and any store submission each wait for Tim.
