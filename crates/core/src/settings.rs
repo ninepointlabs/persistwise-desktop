@@ -31,11 +31,18 @@ impl Default for Settings {
 pub struct FeedSettings {
     /// How often feeds are checked while the app is open. 0 turns it off.
     pub poll_minutes: u32,
+    /// Windows: keep running in the tray when the window is closed and start
+    /// (hidden) at sign-in, so feeds keep being checked. On Linux the
+    /// systemd user timer does this instead and this flag is not used.
+    pub background: bool,
 }
 
 impl Default for FeedSettings {
     fn default() -> Self {
-        Self { poll_minutes: 15 }
+        Self {
+            poll_minutes: 15,
+            background: true,
+        }
     }
 }
 
@@ -171,7 +178,10 @@ mod tests {
                 mode: IpfsMode::Kubo,
                 ..Default::default()
             },
-            feeds: FeedSettings { poll_minutes: 30 },
+            feeds: FeedSettings {
+                poll_minutes: 30,
+                background: false,
+            },
         };
         save(dir.path(), &s).unwrap();
         assert_eq!(load(dir.path()), s);

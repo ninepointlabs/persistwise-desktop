@@ -27,3 +27,9 @@ tauri-plugin-opener = "2"
 # Same glib Tauri/GTK already link; used only to set the program name so the
 # Wayland app_id and X11 WM_CLASS match the desktop file id.
 glib = "0.18"
+
+[target.'cfg(windows)'.dependencies]
+# Windows only: tray icon for "keep checking feeds when closed", and one
+# running copy (a second launch shows the existing window).
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-single-instance = "2"

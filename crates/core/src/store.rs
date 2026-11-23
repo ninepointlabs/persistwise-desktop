@@ -17,7 +17,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use crate::util;
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 /// Marks where a search hit starts and ends in a snippet. Private-use
 /// characters, so the UI can HTML-escape the snippet and then swap these
@@ -78,6 +78,8 @@ pub struct Page {
     pub origin: String,
     /// Why the last download of this page failed (feed pages are retried).
     pub capture_error: Option<String>,
+    /// When an imported copy had its images and styles embedded.
+    pub localized_at: Option<String>,
     /// Search snippet, only set on search results.
     pub snippet: Option<String>,
 }
@@ -113,7 +115,7 @@ pub struct Stats {
 const PAGE_COLUMNS: &str = "p.id, p.uid, p.url, p.final_url, p.title, p.author, p.feed_id, f.name, p.guid, \
     p.published_at, p.saved_at, p.content_type, p.local_path, p.size_bytes, p.sha256, p.assets_inlined, \
     p.assets_failed, p.wayback_status, p.wayback_url, p.wayback_error, p.wayback_at, p.ipfs_status, p.cid, \
-    p.pin_service, p.ipfs_error, p.ipfs_at, p.origin, p.capture_error";
+    p.pin_service, p.ipfs_error, p.ipfs_at, p.origin, p.capture_error, p.localized_at";
 
 fn page_from_row(r: &Row, snippet: Option<String>) -> rusqlite::Result<Page> {
     Ok(Page {
@@ -145,6 +147,7 @@ fn page_from_row(r: &Row, snippet: Option<String>) -> rusqlite::Result<Page> {
         ipfs_at: r.get(25)?,
         origin: r.get(26)?,
         capture_error: r.get(27)?,
+        localized_at: r.get(28)?,
         snippet,
     })
 }
@@ -291,7 +294,7 @@ impl Store {
                 );
                 let mut stmt = conn.prepare(&sql)?;
                 let rows = stmt.query_map(params![q, feed_id, limit, offset], |r| {
-                    let snip: Option<String> = r.get(28)?;
+                    let snip: Option<String> = r.get(29)?;
                     page_from_row(r, snip.filter(|s| !s.is_empty()))
                 })?;
                 for r in rows {
@@ -665,6 +668,40 @@ impl Store {
         Ok(())
     }
 
+    /// Imported HTML copies whose images/styles still point at the web.
+    pub fn pages_needing_localize(&self, limit: i64) -> Result<Vec<Page>> {
+        let conn = self.conn();
+        let sql = format!(
+            "SELECT {PAGE_COLUMNS} FROM pages p LEFT JOIN feeds f ON f.id = p.feed_id \
+             WHERE p.origin = 'import' AND p.local_path IS NOT NULL AND p.content_type = 'text/html' \
+             AND p.localized_at IS NULL ORDER BY p.id LIMIT ?1"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map([limit], |r| page_from_row(r, None))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Replaces a page's file with its localized version. `saved_at` is kept.
+    pub fn set_localized(
+        &self,
+        id: i64,
+        file: Option<(String, i64, String)>,
+        assets: (i64, i64),
+    ) -> Result<()> {
+        let conn = self.conn();
+        if let Some((p, sz, sha)) = file {
+            conn.execute(
+                "UPDATE pages SET local_path = ?2, size_bytes = ?3, sha256 = ?4 WHERE id = ?1",
+                params![id, p, sz, sha],
+            )?;
+        }
+        conn.execute(
+            "UPDATE pages SET assets_inlined = ?2, assets_failed = ?3, localized_at = ?4 WHERE id = ?1",
+            params![id, assets.0, assets.1, util::now()],
+        )?;
+        Ok(())
+    }
+
     pub fn stats(&self) -> Result<Stats> {
         let conn = self.conn();
         Ok(conn.query_row(
@@ -792,6 +829,17 @@ fn migrate(conn: &Connection) -> Result<()> {
             ALTER TABLE pages ADD COLUMN capture_attempts INTEGER NOT NULL DEFAULT 0;
             CREATE UNIQUE INDEX pages_feed_guid ON pages(feed_id, guid) WHERE feed_id IS NOT NULL AND guid IS NOT NULL;
             PRAGMA user_version = 2;
+            COMMIT;
+            "#,
+        )?;
+    }
+    if version < 3 {
+        // v3: imported copies get their images and styles embedded once.
+        conn.execute_batch(
+            r#"
+            BEGIN;
+            ALTER TABLE pages ADD COLUMN localized_at TEXT;
+            PRAGMA user_version = 3;
             COMMIT;
             "#,
         )?;

@@ -3,11 +3,16 @@
 //! On Linux with systemd this installs a *user* timer (no root, no service we
 //! run) that starts `persistwise-desktop --poll` every few minutes: it checks
 //! feeds once and exits. Turning it off removes exactly those two files.
-//! Not available in the Flatpak (no access to the host's systemd) or on
-//! Windows yet; there, feeds are checked while the app is open.
+//! Not available in the Flatpak (no access to the host's systemd).
+//!
+//! On Windows the same switch keeps Persistwise running in the tray when the
+//! window is closed and starts it hidden at sign-in (`--background`): the
+//! MSIX declares a startup task for that, and the plain .exe uses the
+//! per-user Run registry key. The switch is the `feeds.background` setting;
+//! a `--background` launch with it off exits straight away.
 
 use serde::Serialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub const UNIT: &str = "com.ninepointlabs.Persistwise-poll";
 
@@ -50,15 +55,24 @@ fn has_systemctl() -> bool {
         .unwrap_or(false)
 }
 
-pub fn status() -> Status {
+pub fn status(root: &Path) -> Status {
     let unsupported = |reason: &str| Status {
         supported: false,
         enabled: false,
         reason: Some(reason.into()),
         command: None,
     };
+    if cfg!(windows) {
+        let enabled = persistwise_core::settings::load(root).feeds.background;
+        return Status {
+            supported: true,
+            enabled,
+            reason: None,
+            command: program().map(|p| format!("\"{p}\" --background")),
+        };
+    }
     if !cfg!(target_os = "linux") {
-        return unsupported("On Windows, feeds are checked while Persistwise is open. Background checking is planned for the Store version.");
+        return unsupported("Not available on this system.");
     }
     if in_flatpak() {
         return unsupported("The Flatpak cannot set up a background timer. Feeds are checked while Persistwise is open (the AppImage can do this).");
@@ -76,6 +90,67 @@ pub fn status() -> Status {
         reason: None,
         command: program().map(|p| format!("\"{p}\" --poll")),
     }
+}
+
+/// True for the Microsoft Store (MSIX) install, which lives under WindowsApps.
+pub fn is_msix() -> bool {
+    std::env::current_exe()
+        .map(|p| {
+            p.to_string_lossy()
+                .to_ascii_lowercase()
+                .contains("\\windowsapps\\")
+        })
+        .unwrap_or(false)
+}
+
+/// Windows: the per-user "run at sign-in" entry for the plain .exe. The MSIX
+/// uses its declared startup task instead (registry writes are virtualised
+/// inside a package and would not take effect).
+fn windows_run_key(enable: bool) -> Result<(), String> {
+    if is_msix() {
+        return Ok(());
+    }
+    const KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+    let mut cmd = std::process::Command::new("reg");
+    if enable {
+        let program = program().ok_or("could not find the Persistwise program")?;
+        cmd.args([
+            "add",
+            KEY,
+            "/v",
+            "Persistwise",
+            "/t",
+            "REG_SZ",
+            "/d",
+            &format!("\"{program}\" --background"),
+            "/f",
+        ]);
+    } else {
+        cmd.args(["delete", KEY, "/v", "Persistwise", "/f"]);
+    }
+    let out = cmd
+        .output()
+        .map_err(|e| format!("could not run reg: {e}"))?;
+    if out.status.success() || !enable {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}
+
+/// Windows: make sure the sign-in entry matches the setting (called at start).
+pub fn sync_windows(root: &Path) {
+    if cfg!(windows) {
+        let _ = windows_run_key(persistwise_core::settings::load(root).feeds.background);
+    }
+}
+
+fn set_windows_flag(root: &Path, on: bool) -> Result<Status, String> {
+    let mut s = persistwise_core::settings::load(root);
+    s.feeds.background = on;
+    persistwise_core::settings::save(root, &s).map_err(|e| e.to_string())?;
+    windows_run_key(on)?;
+    Ok(status(root))
 }
 
 /// systemd unit files for a check every `minutes`.
@@ -117,8 +192,11 @@ fn systemctl(args: &[&str]) -> Result<(), String> {
     }
 }
 
-pub fn enable(minutes: u32) -> Result<Status, String> {
-    let st = status();
+pub fn enable(root: &Path, minutes: u32) -> Result<Status, String> {
+    if cfg!(windows) {
+        return set_windows_flag(root, true);
+    }
+    let st = status(root);
     if !st.supported {
         return Err(st.reason.unwrap_or_default());
     }
@@ -133,10 +211,13 @@ pub fn enable(minutes: u32) -> Result<Status, String> {
     std::fs::write(dir.join(format!("{UNIT}.timer")), timer).map_err(|e| e.to_string())?;
     systemctl(&["daemon-reload"])?;
     systemctl(&["enable", "--now", &format!("{UNIT}.timer")])?;
-    Ok(status())
+    Ok(status(root))
 }
 
-pub fn disable() -> Result<Status, String> {
+pub fn disable(root: &Path) -> Result<Status, String> {
+    if cfg!(windows) {
+        return set_windows_flag(root, false);
+    }
     let dir = unit_dir().ok_or("no config folder")?;
     let _ = systemctl(&["disable", "--now", &format!("{UNIT}.timer")]);
     for ext in ["timer", "service"] {
@@ -146,7 +227,7 @@ pub fn disable() -> Result<Status, String> {
         }
     }
     let _ = systemctl(&["daemon-reload"]);
-    Ok(status())
+    Ok(status(root))
 }
 
 #[cfg(test)]

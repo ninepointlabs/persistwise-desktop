@@ -81,3 +81,52 @@ pub fn backup_ipfs(store: &Store, id: i64) -> Result<Page> {
     }
     store.page(id)?.ok_or_else(|| anyhow!("no such page"))
 }
+
+/// Embeds the images, styles and fonts of a saved HTML copy that still
+/// links to them on the web (copies imported from the Persistwise website
+/// were stored that way). Uses the page's own URL as the base. The original
+/// saved date is kept. If nothing could be fetched at all (offline, site
+/// gone) the page is left as it was and tried again later.
+pub fn localize_page(store: &Store, id: i64, opts: &capture::CaptureOptions) -> Result<Page> {
+    let page = store.page(id)?.ok_or_else(|| anyhow!("no such page"))?;
+    let path = store
+        .file_path(&page)
+        .ok_or_else(|| anyhow!("the saved copy is missing"))?;
+    if page.content_type != "text/html" {
+        return Ok(page);
+    }
+    let html = util::decode_html(&std::fs::read(&path)?, None);
+    let base = url::Url::parse(&page.url)?;
+    let client = http::client(opts.timeout)?;
+    let out = capture::inline_page(&html, &base, client, opts)?;
+    if out.inlined == 0 && out.failed > 0 {
+        anyhow::bail!(
+            "could not fetch any of its {} images or styles; will try again later",
+            out.failed
+        );
+    }
+    let file = if out.inlined > 0 {
+        Some(store.write_file(&page.uid, "html", out.html.as_bytes())?)
+    } else {
+        None
+    };
+    store.set_localized(id, file, (out.inlined as i64, out.failed as i64))?;
+    store.page(id)?.ok_or_else(|| anyhow!("no such page"))
+}
+
+/// Localizes up to `limit` imported pages. Returns how many were done.
+pub fn localize_imported(
+    store: &Store,
+    limit: i64,
+    opts: &capture::CaptureOptions,
+    on_change: &mut dyn FnMut(i64),
+) -> usize {
+    let mut done = 0;
+    for page in store.pages_needing_localize(limit).unwrap_or_default() {
+        if localize_page(store, page.id, opts).is_ok() {
+            done += 1;
+            on_change(page.id);
+        }
+    }
+    done
+}

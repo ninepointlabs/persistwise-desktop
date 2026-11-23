@@ -320,7 +320,9 @@ fn import_post(
         Some(page) => {
             // A copy this computer saved itself (fully inlined) is kept over
             // the web app's HTML; imported copies are refreshed when changed.
-            let local_is_better = page.origin != "import" && store.file_path(&page).is_some();
+            // Same for an imported copy whose images were embedded since.
+            let local_is_better = (page.origin != "import" || page.localized_at.is_some())
+                && store.file_path(&page).is_some();
             let file = match &copy {
                 Some(_) if local_is_better => {
                     report.copies_unchanged += 1;

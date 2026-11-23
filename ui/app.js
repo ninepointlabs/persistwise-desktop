@@ -277,6 +277,8 @@ async function renderReader(p, reloadFrame) {
     p.wayback_status !== "pending" ? h("button", { onclick: () => sendWayback(p.id) }, p.wayback_url ? "Capture again" : "Send to Wayback") : null,
     p.cid ? h("button", { onclick: async () => openExternal(await invoke("ipfs_link", { cid: p.cid })) }, "Open on IPFS") : null,
     !p.cid && p.ipfs_status !== "pending" && p.local_path ? h("button", { onclick: () => pinIpfs(p.id) }, "Pin to IPFS") : null,
+    p.origin === "import" && p.local_path && !p.localized_at && p.content_type === "text/html"
+      ? h("button", { onclick: (e) => embedImages(p.id, e.target) }, "Embed images now") : null,
     p.local_path ? h("button", { onclick: () => invoke("open_saved_file", { id: p.id }).catch((e) => alert(e)) }, "Open file") : null,
     h("button", { class: "danger", onclick: () => deletePage(p) }, "Delete"),
   ].filter(Boolean));
@@ -284,7 +286,8 @@ async function renderReader(p, reloadFrame) {
   meta.replaceChildren(...[
     h("span", {}, `Saved ${fmtDate(p.saved_at)}`),
     p.size_bytes ? h("span", {}, fmtBytes(p.size_bytes)) : null,
-    p.origin !== "import" ? h("span", {}, `${p.assets_inlined} resources inlined${p.assets_failed ? `, ${p.assets_failed} could not be` : ""}`) : h("span", {}, "Imported from Persistwise web"),
+    p.origin !== "import" ? h("span", {}, `${p.assets_inlined} resources inlined${p.assets_failed ? `, ${p.assets_failed} could not be` : ""}`) : h("span", {}, p.localized_at ? `Imported from Persistwise web; ${p.assets_inlined} images and styles embedded`
+      : "Imported from Persistwise web; images still load from the original site until they are embedded (on the next feed check)"),
     p.capture_error && !p.local_path ? h("span", { class: "err" }, `Download failed (will retry on the next check): ${p.capture_error}`) : null,
     p.wayback_status === "pending" ? h("span", {}, "Waiting for Save Page Now…") : null,
     p.wayback_error && p.wayback_status === "failed" ? h("span", { class: "err" }, `Wayback: ${p.wayback_error}`) : null,
@@ -305,6 +308,20 @@ async function renderReader(p, reloadFrame) {
       frame.removeAttribute("src");
       frame.srcdoc = "<p style='font:14px system-ui;padding:20px'>This saved file is not a web page. Use “Open file” to view it.</p>";
     }
+  }
+}
+
+async function embedImages(id, btn) {
+  btn.disabled = true;
+  btn.textContent = "Embedding…";
+  try {
+    const p = await invoke("localize_page", { id });
+    state.current = p;
+    renderReader(p, true);
+  } catch (e) {
+    alert(`Could not embed images: ${e}`);
+    btn.disabled = false;
+    btn.textContent = "Embed images now";
   }
 }
 
@@ -452,7 +469,11 @@ function fillBackground(bg) {
   const box = $("#bg-enabled");
   box.checked = bg.enabled;
   box.disabled = !bg.supported;
+  const win = state.platform === "windows";
   $("#bg-status").textContent = !bg.supported ? bg.reason
+    : win ? (bg.enabled
+      ? "On: closing the window keeps Persistwise in the tray (right-click the icon to quit), and it starts hidden when you sign in."
+      : "Off: closing the window quits Persistwise, and it does not start when you sign in.")
     : bg.enabled ? `On: a systemd user timer runs ${bg.command}. If you move the AppImage, turn this off and on again.`
     : "Uses a systemd user timer on this computer (no root, nothing runs on our servers).";
 }

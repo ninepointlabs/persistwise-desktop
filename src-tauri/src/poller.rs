@@ -74,6 +74,11 @@ impl Poller {
                     }
                 };
                 let result = feeds::poll_all(&store, target, &opts, &mut on_change);
+                // Scheduled and "check all" runs also embed images into a few
+                // more copies imported from the Persistwise website.
+                if target.is_none() && result.is_ok() {
+                    persistwise_core::localize_imported(&store, 25, &opts.capture, &mut on_change);
+                }
                 flag.store(false, Ordering::SeqCst);
                 let state = match result {
                     Ok(reports) => PollState {

@@ -168,6 +168,13 @@ async fn add_feed(
     Ok(feed)
 }
 
+/// Embeds images/styles into one imported copy now.
+#[tauri::command]
+async fn localize_page(state: State<'_, AppState>, id: i64) -> CmdResult<Page> {
+    let store = state.store.clone();
+    blocking(move || persistwise_core::localize_page(&store, id, &CaptureOptions::default())).await
+}
+
 #[tauri::command]
 fn check_feeds(poller: State<poller::Poller>, feed_id: Option<i64>) {
     poller.check_now(feed_id);
@@ -192,17 +199,17 @@ fn remove_feed(state: State<AppState>, id: i64) -> CmdResult<()> {
 }
 
 #[tauri::command]
-fn background_status() -> background::Status {
-    background::status()
+fn background_status(state: State<AppState>) -> background::Status {
+    background::status(state.store.root())
 }
 
 #[tauri::command]
 fn set_background(state: State<AppState>, enabled: bool) -> CmdResult<background::Status> {
     if enabled {
         let minutes = settings::load(state.store.root()).feeds.poll_minutes;
-        background::enable(if minutes == 0 { 15 } else { minutes })
+        background::enable(state.store.root(), if minutes == 0 { 15 } else { minutes })
     } else {
-        background::disable()
+        background::disable(state.store.root())
     }
 }
 
@@ -247,8 +254,11 @@ fn save_settings(
     let root = state.store.root();
     settings::save(root, &settings).map_err(err)?;
     // Keep the background timer's schedule in step with the setting.
-    if background::status().enabled && settings.feeds.poll_minutes > 0 {
-        let _ = background::enable(settings.feeds.poll_minutes);
+    if cfg!(target_os = "linux")
+        && background::status(root).enabled
+        && settings.feeds.poll_minutes > 0
+    {
+        let _ = background::enable(root, settings.feeds.poll_minutes);
     }
     if let Some(up) = secrets {
         let mut cur: Secrets = settings::load_secrets(root);
@@ -486,6 +496,55 @@ fn smoke_report(app: AppHandle, ok: bool, details: String) {
     app.exit(if ok { 0 } else { 5 });
 }
 
+/// Shows and focuses the main window (it starts hidden).
+fn show_main(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+}
+
+#[cfg(windows)]
+mod tray {
+    //! Tray icon so Persistwise can keep checking feeds with its window closed.
+    use tauri::menu::{Menu, MenuItem};
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+    use tauri::Manager;
+
+    pub fn install(app: &mut tauri::App) -> tauri::Result<()> {
+        let open = MenuItem::with_id(app, "open", "Open Persistwise", true, None::<&str>)?;
+        let check = MenuItem::with_id(app, "check", "Check feeds now", true, None::<&str>)?;
+        let quit = MenuItem::with_id(app, "quit", "Quit Persistwise", true, None::<&str>)?;
+        let menu = Menu::with_items(app, &[&open, &check, &quit])?;
+        let mut tray = TrayIconBuilder::with_id("main")
+            .tooltip("Persistwise")
+            .menu(&menu)
+            .show_menu_on_left_click(false)
+            .on_menu_event(|app, event| match event.id.as_ref() {
+                "open" => super::show_main(app),
+                "check" => app.state::<super::poller::Poller>().check_now(None),
+                "quit" => app.exit(0),
+                _ => {}
+            })
+            .on_tray_icon_event(|tray, event| {
+                if let TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                } = event
+                {
+                    super::show_main(tray.app_handle());
+                }
+            });
+        if let Some(icon) = app.default_window_icon() {
+            tray = tray.icon(icon.clone());
+        }
+        tray.build(app)?;
+        Ok(())
+    }
+}
+
 fn main() {
     #[cfg(target_os = "linux")]
     {
@@ -553,10 +612,15 @@ fn main() {
         let opts = persistwise_core::feeds::PollOptions::from_settings(&store);
         match persistwise_core::feeds::poll_all(&store, None, &opts, &mut |_| {}) {
             Ok(reports) => {
+                let localized =
+                    persistwise_core::localize_imported(&store, 25, &opts.capture, &mut |_| {});
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&reports).unwrap_or_default()
                 );
+                if localized > 0 {
+                    eprintln!("embedded images into {localized} imported page(s)");
+                }
                 return;
             }
             Err(e)
@@ -584,9 +648,23 @@ fn main() {
     }
 
     let smoke = args.iter().any(|a| a == "--smoke-test");
+    // `--background` (Windows sign-in start): run hidden in the tray, only
+    // when the user has "keep checking feeds when closed" on.
+    let background_launch = args.iter().any(|a| a == "--background");
+    if background_launch && !(cfg!(windows) && settings::load(&root).feeds.background) {
+        return;
+    }
+    background::sync_windows(&root);
     let protocol_store = store.clone();
     let poller_store = store.clone();
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // Windows: a second launch shows the running window instead of starting
+    // another copy (it may be hidden in the tray).
+    #[cfg(windows)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        show_main(app);
+    }));
+    builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(AppState { store })
@@ -596,6 +674,11 @@ fn main() {
         .setup(move |app| {
             let poller = poller::Poller::start(app.handle().clone(), poller_store.clone());
             app.manage(poller);
+            #[cfg(windows)]
+            tray::install(app)?;
+            if !background_launch {
+                show_main(app.handle());
+            }
             if smoke {
                 // Exercises the real webview: IPC, the app CSP and the saved
                 // copy protocol. The page reports back through smoke_report.
@@ -614,6 +697,18 @@ fn main() {
                 });
             }
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            // Windows with background checking on: closing hides to the tray.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if cfg!(windows) {
+                    let root = window.state::<AppState>().store.root().to_path_buf();
+                    if settings::load(&root).feeds.background {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    }
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             app_info,
@@ -635,6 +730,7 @@ fn main() {
             omarchy_theme,
             smoke_report,
             add_feed,
+            localize_page,
             check_feeds,
             polling_now,
             set_feed_paused,
