@@ -7,6 +7,8 @@
 name: Linux
 
 on:
+  push:                    # TEMPORARY: one CI run on the PR branch; removed in the next commit
+    branches: [feat/v0.1]
   release:
     types: [published]
   workflow_dispatch:
