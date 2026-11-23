@@ -80,6 +80,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(unix)] // runs the Unix `env` tool; this only matters for the Linux AppImage
     fn restores_host_values_for_children_only() {
         // Simulates what the AppImage AppRun sets up. This is the only test
         // in this crate that touches the process environment.

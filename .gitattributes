@@ -1,0 +1,6 @@
+# Test fixtures are checked byte for byte (their SHA-256s are in the
+# manifest), so git must never rewrite their line endings on Windows.
+crates/core/tests/fixtures/** -text
+# Scripts run on Linux runners and in the AppImage; keep them LF everywhere.
+*.sh text eol=lf
+packaging/linux/AppRun text eol=lf

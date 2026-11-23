@@ -22,7 +22,7 @@ jobs:
         with:
           node-version: 22
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace --no-fail-fast
       - name: Build app
         run: |
           npm ci --no-audit --no-fund
