@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+<style>.pw-fill{fill:#011321}.pw-stroke{stroke:#011321}@media (prefers-color-scheme:dark){.pw-fill{fill:#e9eef3}.pw-stroke{stroke:#e9eef3}}</style>
+<defs>
+<clipPath id="pw-sand"><path d="M208 112 C208 198 249 222 249 254 L249 262 C249 290 208 314 208 398 L304 398 C304 314 263 290 263 262 L263 254 C263 222 304 198 304 112 Z"/></clipPath>
+<mask id="pw-knock" maskUnits="userSpaceOnUse" x="0" y="0" width="512" height="512">
+<rect width="512" height="512" fill="#fff"/>
+<path d="M262 332 L302 370 L424 226" fill="none" stroke="#000" stroke-width="80" stroke-linecap="round" stroke-linejoin="round"/>
+</mask>
+</defs>
+<g class="pw-fill">
+<rect x="80" y="56" width="352" height="48" rx="24"/>
+<rect x="80" y="408" width="352" height="48" rx="24"/>
+<g mask="url(#pw-knock)">
+<rect x="104" y="100" width="26" height="312"/>
+<rect x="382" y="100" width="26" height="312"/>
+<path d="M180 104 C180 196 238 220 238 256 C238 292 180 316 180 408 M332 104 C332 196 274 220 274 256 C274 292 332 316 332 408" fill="none" class="pw-stroke" stroke-width="24"/>
+<g clip-path="url(#pw-sand)">
+<path d="M190 190 C226 176 270 200 322 182 L322 262 L190 262 Z"/>
+<rect x="252" y="250" width="8" height="120"/>
+<path d="M190 400 C220 372 240 362 256 362 C272 362 292 372 322 400 Z"/>
+</g>
+</g>
+<path d="M262 332 L302 370 L424 226" fill="none" class="pw-stroke" stroke-width="40" stroke-linecap="round" stroke-linejoin="round"/>
+</g>
+</svg>

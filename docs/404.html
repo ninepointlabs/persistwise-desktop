@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Persistwise has moved</title>
+    <meta name="description" content="Persistwise on the web is closing. This page has moved to the Persistwise home page.">
+    <meta name="robots" content="noindex">
+    <meta name="color-scheme" content="light dark">
+    <meta property="og:type" content="website">
+    <meta property="og:site_name" content="Persistwise">
+    <meta property="og:title" content="Persistwise has moved">
+    <meta property="og:description" content="Persistwise on the web is closing. Persistwise Desktop is a personal web archive that runs on your own computer.">
+    <meta property="og:url" content="https://persistwise.com/">
+    <meta property="og:image" content="https://persistwise.com/icon.png">
+    <!-- Absolute paths: GitHub Pages serves this page at any missing path, at any depth. -->
+    <link rel="icon" href="/favicon.ico" sizes="48x48">
+    <link rel="icon" href="/icon.svg" type="image/svg+xml">
+    <link rel="icon" href="/icon-32.png" type="image/png" sizes="32x32">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+    <link rel="stylesheet" href="/style.css">
+    <script>
+      // Old Persistwise web paths go to the farewell section; anything else goes home.
+      (function () {
+        var path = location.pathname.replace(/\/+$/, "") || "/";
+        var old = /^\/(pricing|faq|how-it-works|getting-started|session\/new|sessions\/new|registration\/new|signup|login)$|^\/passwords(\/|$)|^\/(archive|feeds|account)/;
+        location.replace(old.test(path) ? "/#farewell" : "/");
+      })();
+    </script>
+    <script>window.goatcounter = {path: function(p) { return location.host + p }}</script>
+    <script data-goatcounter="https://goatcounter-production-af4b.up.railway.app/count" async src="//gc.zgo.at/count.js"></script>
+  </head>
+
+  <body>
+    <header class="site">
+      <div class="wrap">
+        <a class="brand" href="/"><img src="/icon.svg" alt="" width="28" height="28">Persistwise</a>
+      </div>
+    </header>
+
+    <main id="main" class="wrap">
+      <section class="measure">
+        <h1>This page has moved</h1>
+        <p class="lede">
+          Persistwise on the web is closing, so this page is no longer here.
+          Taking you to the Persistwise home page…
+        </p>
+        <p><a class="button" href="/#farewell">Go to the Persistwise home page</a></p>
+      </section>
+    </main>
+
+    <footer class="site">
+      <div class="wrap">
+        <p>Persistwise by <a href="https://ninepointlabs.com">Nine Point Labs</a>
+          · <a href="https://github.com/ninepointlabs/persistwise-desktop">GitHub</a></p>
+      </div>
+    </footer>
+  </body>
+</html>
