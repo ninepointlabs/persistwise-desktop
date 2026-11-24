@@ -1,4 +1,5 @@
-# Linux: tests, AppImage and self-hosted Flatpak bundle.
+# Linux: tests, AppImage, self-hosted Flatpak bundle, and .deb/.rpm/Arch
+# packages (each installed and started in a clean distro container).
 #
 # Runs on every pull request (build and checks only), when Tim publishes a
 # release (attaches the Linux files to it), or by hand (Actions > Linux >
@@ -31,7 +32,7 @@ jobs:
             libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev librsvg2-dev librsvg2-bin \
             libayatana-appindicator3-dev \
             patchelf file desktop-file-utils appstream zsync xvfb xauth dbus-x11 \
-            flatpak
+            flatpak dpkg-dev rpm
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -80,6 +81,11 @@ jobs:
           test ! -e "$XDG_DATA_HOME/applications/com.ninepointlabs.Persistwise.desktop"
           du -h "$AI"
 
+      - name: deb, rpm and PKGBUILD
+        run: |
+          ./scripts/build-linux-packages.sh
+          objdump -T target/release/persistwise-desktop | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
+
       - name: appimagelint (report only)
         continue-on-error: true
         run: |
@@ -118,10 +124,114 @@ jobs:
             dist/*.AppImage.sha256
             dist/*.flatpak
             dist/*.flatpak.sha256
+            dist/*.deb
+            dist/*.deb.sha256
+            dist/*.rpm
+            dist/*.rpm.sha256
+            dist/PKGBUILD
+
+  arch:
+    # Builds the Arch package from the generated PKGBUILD (makepkg as a
+    # non-root user; the .deb is picked up from the folder, not downloaded),
+    # then installs it with pacman and starts it.
+    needs: build
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-packages
+          path: dist
+      - name: makepkg
+        run: |
+          set -eux
+          pacman -Syu --noconfirm --needed namcap
+          useradd -m builder
+          install -d -o builder /home/builder/pkg
+          install -o builder dist/PKGBUILD dist/*.deb /home/builder/pkg/
+          cd /home/builder/pkg
+          sudo -u builder makepkg --nodeps --noconfirm
+          sudo -u builder namcap PKGBUILD *.pkg.tar.zst || true
+      - name: Install and start
+        run: |
+          set -eux
+          pacman -U --noconfirm /home/builder/pkg/*.pkg.tar.zst
+          pacman -Qi persistwise-desktop-bin
+          if ldd /usr/bin/persistwise-desktop | grep "not found"; then exit 1; fi
+          test -f /usr/share/applications/com.ninepointlabs.Persistwise.desktop
+          test -f /usr/share/licenses/persistwise-desktop-bin/LICENSE
+          export HOME=$(mktemp -d) PERSISTWISE_DATA_DIR=$(mktemp -d)/data
+          persistwise-desktop --version
+          sudo -u builder env PERSISTWISE_DATA_DIR=/tmp/pw-arch persistwise-desktop --self-test
+      - name: Collect
+        run: |
+          mkdir -p arch-out
+          cp /home/builder/pkg/*.pkg.tar.zst arch-out/
+          cd arch-out && for f in *.pkg.tar.zst; do sha256sum "$f" > "$f.sha256"; done
+          ls -la
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arch-package
+          path: |
+            arch-out/*.pkg.tar.zst
+            arch-out/*.pkg.tar.zst.sha256
+
+  deb-check:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["ubuntu:22.04", "ubuntu:24.04", "debian:12"]
+    runs-on: ubuntu-latest
+    container: ${{ matrix.image }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-packages
+          path: dist
+      - name: Install and start
+        run: |
+          set -eux
+          apt-get update
+          # dpkg -i does not fetch dependencies; apt-get -f install does.
+          dpkg -i dist/*.deb || DEBIAN_FRONTEND=noninteractive apt-get install -y -f
+          dpkg -s persistwise-desktop
+          if ldd /usr/bin/persistwise-desktop | grep "not found"; then exit 1; fi
+          test -f /usr/share/applications/com.ninepointlabs.Persistwise.desktop
+          export HOME=$(mktemp -d) PERSISTWISE_DATA_DIR=$(mktemp -d)/data
+          persistwise-desktop --version
+          persistwise-desktop --self-test
+          apt-get remove -y persistwise-desktop
+          test ! -e /usr/bin/persistwise-desktop
+
+  rpm-check:
+    needs: build
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-packages
+          path: dist
+      - name: Install and start
+        run: |
+          set -eux
+          dnf install -y dist/*.rpm
+          rpm -qi persistwise-desktop
+          rpm -V persistwise-desktop
+          if ldd /usr/bin/persistwise-desktop | grep "not found"; then exit 1; fi
+          test -f /usr/share/applications/com.ninepointlabs.Persistwise.desktop
+          export HOME=$(mktemp -d) PERSISTWISE_DATA_DIR=$(mktemp -d)/data
+          persistwise-desktop --version
+          persistwise-desktop --self-test
+          dnf remove -y persistwise-desktop
+          test ! -e /usr/bin/persistwise-desktop
 
   attach:
-    # Additive only: uploads the Linux files to the release, never deletes assets.
-    needs: build
+    # Additive only: uploads the Linux files the release does not have yet.
+    # Never deletes or replaces an asset, so a manual run with a tag only
+    # fills in what is missing.
+    needs: [build, arch, deb-check, rpm-check]
     if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.tag != '')
     runs-on: ubuntu-22.04
     permissions:
@@ -129,12 +239,28 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: linux-packages
+          pattern: "*-package*"
+          merge-multiple: true
           path: dist
       - name: Upload to release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event.release.tag_name || inputs.tag }}
         run: |
-          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
-            dist/*.AppImage dist/*.AppImage.zsync dist/*.AppImage.sha256 dist/*.flatpak dist/*.flatpak.sha256
+          set -eu
+          existing=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name')
+          new=()
+          for f in dist/*.AppImage dist/*.AppImage.zsync dist/*.AppImage.sha256 \
+                   dist/*.flatpak dist/*.flatpak.sha256 \
+                   dist/*.deb dist/*.deb.sha256 dist/*.rpm dist/*.rpm.sha256 \
+                   dist/*.pkg.tar.zst dist/*.pkg.tar.zst.sha256 dist/PKGBUILD; do
+            if grep -qxF "$(basename "$f")" <<<"$existing"; then
+              echo "already on the release, left as is: $(basename "$f")"
+            else
+              new+=("$f")
+            fi
+          done
+          if [ ${#new[@]} -gt 0 ]; then
+            gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" "${new[@]}"
+          fi
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name'

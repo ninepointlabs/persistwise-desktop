@@ -1,0 +1,29 @@
+# Maintainer: Nine Point Labs <179739321+ninepointlabs@users.noreply.github.com>
+#
+# Template: scripts/build-linux-packages.sh fills in the version and the .deb
+# checksum and publishes the result as the PKGBUILD release asset.
+# Install from the release: download PKGBUILD into an empty folder, then
+#   makepkg -si
+pkgname=persistwise-desktop-bin
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc="A personal web archive on your own machine"
+arch=('x86_64')
+url="https://github.com/ninepointlabs/persistwise-desktop"
+license=('MIT')
+depends=('webkit2gtk-4.1' 'gtk3' 'libsoup3' 'gdk-pixbuf2' 'cairo' 'glib2' 'dbus'
+         'gcc-libs' 'glibc' 'hicolor-icon-theme')
+optdepends=('xdg-utils: open original pages in your browser')
+provides=('persistwise-desktop')
+conflicts=('persistwise-desktop')
+options=('!strip' '!debug')
+source=("persistwise-desktop_${pkgver}_amd64.deb::${url}/releases/download/v${pkgver}/persistwise-desktop_${pkgver}_amd64.deb")
+sha256sums=('@DEB_SHA256@')
+noextract=("persistwise-desktop_${pkgver}_amd64.deb")
+
+package() {
+  bsdtar -xOf "$srcdir/persistwise-desktop_${pkgver}_amd64.deb" 'data.tar.*' | bsdtar -xf - -C "$pkgdir"
+  install -Dm644 "$pkgdir/usr/share/doc/persistwise-desktop/copyright" \
+    "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  rm -rf "$pkgdir/usr/share/doc"
+}
