@@ -5,8 +5,6 @@
 *.zsync
 *.flatpak
 *.msix
-/packaging/flatpak/.flatpak-builder/
-/packaging/flatpak/build-dir/
 node_modules/
 .env
 .env.*

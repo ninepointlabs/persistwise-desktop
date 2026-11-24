@@ -39,7 +39,7 @@ npm ci
 npx tauri dev                       # run
 cargo test --workspace              # tests, no network needed
 ./scripts/build-appimage.sh         # dist/persistwise-desktop-0.1.0-x86_64.AppImage (+ .zsync, .sha256)
-./scripts/build-flatpak.sh          # dist/…flatpak (needs flatpak; uses Flathub's org.flatpak.Builder)
+./scripts/build-flatpak.sh          # dist/…flatpak (needs flatpak; flatpak build-init/build-finish, no flatpak-builder)
 pwsh scripts/build-msix.ps1         # Windows: dist\…-x64.msix (needs Windows SDK)
 ```
 
