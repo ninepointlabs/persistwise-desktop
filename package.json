@@ -1,0 +1,13 @@
+{
+  "name": "persistwise-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Build tooling only (Tauri CLI). The app UI is plain HTML/JS in ui/ with no npm dependencies.",
+  "license": "MIT",
+  "scripts": {
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.6"
+  }
+}

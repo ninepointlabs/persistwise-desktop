@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Persistwise
+GenericName=Web Archive
+Comment=Save full copies of web pages and search them offline
+Exec=persistwise-desktop
+TryExec=persistwise-desktop
+Icon=com.ninepointlabs.Persistwise
+Terminal=false
+Categories=Utility;Archiving;
+Keywords=archive;bookmark;wayback;ipfs;save;offline;web;
+StartupNotify=true
+StartupWMClass=com.ninepointlabs.Persistwise

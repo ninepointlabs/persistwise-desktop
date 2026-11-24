@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Persistwise</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><img src="icon.svg" alt="" width="26" height="26"><span>Persistwise</span></div>
+    <form id="save-form" class="save-form" autocomplete="off">
+      <input id="save-url" type="url" placeholder="Paste a link to save a full copy…" required aria-label="Web address to save">
+      <label class="check" title="Also ask the Internet Archive's public Save Page Now to capture this page">
+        <input id="save-wayback" type="checkbox"> Also send to the Wayback Machine
+      </label>
+      <button id="save-btn" type="submit" class="primary">Save</button>
+    </form>
+  </header>
+
+  <div class="layout">
+    <nav class="sidebar">
+      <input id="search" type="search" placeholder="Search your archive" aria-label="Search your archive">
+      <div class="nav-group">
+        <button class="nav-item active" data-view="pages" data-feed="">All pages <span id="count-all" class="count"></span></button>
+      </div>
+      <div class="nav-group">
+        <div class="group-head"><h3>Feeds</h3>
+          <span><button id="feeds-check" class="mini" title="Check all feeds now" aria-label="Check all feeds now">↻</button><button id="feed-add-toggle" class="mini" title="Follow a feed" aria-label="Follow a feed">+</button></span></div>
+        <form id="feed-add" class="feed-add" hidden autocomplete="off">
+          <input id="feed-url" type="url" placeholder="Blog or feed address" required aria-label="Blog or feed address">
+          <button id="feed-add-btn" type="submit" class="primary">Follow</button>
+          <small class="hint">New posts are saved automatically. The first check saves every post the feed lists now.</small>
+        </form>
+        <div id="feeds"></div>
+        <small id="poll-status" class="hint poll-status"></small>
+      </div>
+      <div class="nav-bottom">
+        <button class="nav-item" data-view="import">Import from Persistwise web</button>
+        <button class="nav-item" data-view="settings">Settings</button>
+        <button class="nav-item" data-view="about">About</button>
+      </div>
+    </nav>
+
+    <main id="main">
+      <section id="view-pages" class="view">
+        <div id="feed-header" class="feed-header" hidden></div>
+        <div id="status" class="status" role="status" aria-live="polite"></div>
+        <ul id="page-list" class="page-list"></ul>
+        <div id="empty" class="empty" hidden>
+          <h2>Your archive is empty</h2>
+          <p>Paste a link above and press Save. Persistwise keeps a full copy on this computer: text, styles, images and fonts, in one file that opens offline.</p>
+          <p>Coming from the Persistwise website? Use <a href="#" data-goto="import">Import from Persistwise web</a>.</p>
+        </div>
+        <button id="more" class="ghost" hidden>Show more</button>
+      </section>
+
+      <section id="view-reader" class="view" hidden>
+        <div class="reader-bar">
+          <button id="reader-back" class="ghost">← Back</button>
+          <div class="reader-title"><strong id="reader-title"></strong><small id="reader-url"></small></div>
+          <div id="reader-actions" class="reader-actions"></div>
+        </div>
+        <div id="reader-meta" class="reader-meta"></div>
+        <iframe id="reader-frame" title="Saved copy" sandbox="" referrerpolicy="no-referrer"></iframe>
+      </section>
+
+      <section id="view-import" class="view prose" hidden>
+        <h1>Import from Persistwise web</h1>
+        <p>A one-time move: bring your feeds, posts, Wayback and IPFS links and saved copies from your Persistwise web account onto this computer. After that, Persistwise checks your feeds itself.</p>
+        <div class="callout">
+          Make the export with the one-time script <code>tools/web-export/export_archive.rb</code> (see <code>docs/web-migration.md</code>), then choose the <code>.zip</code> here. Importing a fresher export again later updates what changed, with no duplicates.
+        </div>
+        <div class="row">
+          <button id="import-zip" class="primary">Choose export (.zip)…</button>
+          <button id="import-folder">Choose unpacked folder…</button>
+        </div>
+        <div id="import-result"></div>
+      </section>
+
+      <section id="view-settings" class="view prose" hidden>
+        <h1>Settings</h1>
+
+        <h2>Wayback Machine</h2>
+        <p>Persistwise asks the Internet Archive's free, public <a href="#" data-ext="https://web.archive.org/save">Save Page Now</a> to capture pages you save. No account is needed. The page's address is sent to the Internet Archive and the capture becomes public. Save Page Now is often busy; when it fails, your local copy is still saved and you can try again from the page.</p>
+        <label class="check"><input id="set-wayback" type="checkbox"> Send pages to the Wayback Machine (on by default; also used for posts from feeds)</label>
+
+        <h2>Feeds</h2>
+        <p>Persistwise checks the feeds you follow and saves every new post, just like the Persistwise website did, but on this computer.</p>
+        <div class="fields">
+          <label>Check feeds
+            <select id="poll-minutes">
+              <option value="15">every 15 minutes</option>
+              <option value="30">every 30 minutes</option>
+              <option value="60">every hour</option>
+              <option value="0">only when I press ↻</option>
+            </select></label>
+          <label class="check"><input id="bg-enabled" type="checkbox"> Keep checking feeds when Persistwise is closed</label>
+          <small class="hint" id="bg-status"></small>
+        </div>
+
+        <h2>IPFS (optional)</h2>
+        <p>IPFS keeps a copy addressable by its content (a CID) so anyone can fetch it from any IPFS gateway while someone pins it. It is entirely optional. Persistwise does not run or pay for pinning; you choose one of these, or leave it off.</p>
+        <fieldset class="choices" id="ipfs-mode">
+          <label class="choice"><input type="radio" name="ipfs-mode" value="off">
+            <span><strong>Off</strong><br><small>Local copies (and Wayback, if you use it) work without IPFS.</small></span></label>
+          <label class="choice"><input type="radio" name="ipfs-mode" value="kubo">
+            <span><strong>My own IPFS node</strong><br><small>Run <a href="#" data-ext="https://docs.ipfs.tech/install/ipfs-desktop/">IPFS Desktop</a> or <a href="#" data-ext="https://docs.ipfs.tech/install/command-line/">Kubo</a> on this computer. Your pages are pinned on your node and available while it is online. Also works with a hosted Kubo-compatible RPC endpoint and your own token.</small></span></label>
+          <label class="choice"><input type="radio" name="ipfs-mode" value="pinata">
+            <span><strong>My own Pinata key</strong><br><small>Create a key in your own <a href="#" data-ext="https://app.pinata.cloud/developers/api-keys">Pinata account</a> and paste its JWT. Uploads count against your plan.</small></span></label>
+        </fieldset>
+
+        <div id="kubo-fields" class="fields" hidden>
+          <label>Node RPC address <input id="kubo-url" type="url" placeholder="http://127.0.0.1:5001"></label>
+          <label>Token (only for hosted RPC; leave empty for a local node)
+            <input id="kubo-token" type="password" autocomplete="off" placeholder="not set"></label>
+          <small class="hint" id="kubo-token-state"></small>
+        </div>
+        <div id="pinata-fields" class="fields" hidden>
+          <label>Pinata JWT <input id="pinata-jwt" type="password" autocomplete="off" placeholder="not set"></label>
+          <small class="hint" id="pinata-jwt-state"></small>
+        </div>
+        <div id="ipfs-common" class="fields" hidden>
+          <label class="check"><input id="pin-on-save" type="checkbox"> Pin each new save automatically</label>
+          <label>Gateway for IPFS links <input id="gateway" type="url" placeholder=""></label>
+          <div class="row"><button id="ipfs-test">Test connection</button><span id="ipfs-test-result" class="hint"></span></div>
+        </div>
+        <p class="hint">Keys are stored only on this computer, in your Persistwise data folder (readable only by you), and are never shown again in full.</p>
+
+        <div class="row"><button id="settings-save" class="primary">Save settings</button><span id="settings-saved" class="hint"></span></div>
+
+        <h2>Storage</h2>
+        <p>Your archive lives in <code id="data-dir"></code>. Back up that folder to back up everything.</p>
+        <button id="open-data">Open data folder</button>
+      </section>
+
+      <section id="view-about" class="view prose" hidden>
+        <h1>About Persistwise Desktop</h1>
+        <p id="about-version"></p>
+        <p>A personal web archive that runs entirely on your own computer. No account, no Nine Point Labs servers, no telemetry. The only network requests it makes are fetching the pages you save, plus the Wayback Machine and IPFS backups if you turn them on.</p>
+        <h2>Linux: add to your app menu</h2>
+        <p>If you run the AppImage without an integrator, start it once from a terminal with <code>--install-desktop-entry</code> to add Persistwise to your app menu and dock (and <code>--remove-desktop-entry</code> to take it out again). <a href="#" data-ext="https://flathub.org/apps/it.mijorus.gearlever">Gear Lever</a> and AppImageLauncher also work.</p>
+        <p class="hint">Made by Nine Point Labs. MIT licensed.</p>
+      </section>
+    </main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

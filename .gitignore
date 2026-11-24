@@ -1,0 +1,10 @@
+/target/
+/dist/
+/build/
+*.AppImage
+*.zsync
+*.flatpak
+*.msix
+node_modules/
+.env
+.env.*

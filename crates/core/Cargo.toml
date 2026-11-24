@@ -1,0 +1,28 @@
+[package]
+name = "persistwise-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Local archive engine for Persistwise Desktop: capture, store, search, Wayback, IPFS, import."
+
+[dependencies]
+anyhow = "1.0.105"
+base64 = "0.23.1"
+chrono = { version = "0.4.45", features = ["serde"] }
+directories = "6.0.0"
+encoding_rs = "0.8.44"
+feed-rs = "3.0.0"
+lol_html = "3.0.3"
+rand = "0.10.4"
+regex = "1.13.2"
+reqwest = { version = "0.13", features = ["blocking", "json", "multipart", "form", "query", "gzip", "brotli", "deflate"] }
+rusqlite = { version = "0.43.0", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.11.1"
+url = "2.5.9"
+zip = { version = "9.8.2", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
