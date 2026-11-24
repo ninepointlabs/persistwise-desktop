@@ -12,8 +12,8 @@ no telemetry.
 Linux is free. Windows will be a paid edition through the Microsoft Store.
 There is no macOS version.
 
-> Status: v0.1, under review. Nothing has been released yet; the install steps
-> below describe how releases will be published.
+> Status: v0.1.0 is out on the
+> [releases page](https://github.com/ninepointlabs/persistwise-desktop/releases).
 
 ## Install on Linux
 
@@ -47,6 +47,14 @@ autonomix-cli add https://github.com/ninepointlabs/persistwise-desktop
   `persistwise-desktop-<version>-x86_64.flatpak` and run
   `flatpak install --user ./persistwise-desktop-<version>-x86_64.flatpak`.
   It needs the GNOME 50 runtime from Flathub, which flatpak offers to install.
+* **Debian / Ubuntu** (22.04 or newer): download
+  `persistwise-desktop_<version>_amd64.deb` and run
+  `sudo apt install ./persistwise-desktop_<version>_amd64.deb`.
+* **Fedora / RHEL-family**: download `persistwise-desktop-<version>-1.x86_64.rpm`
+  and run `sudo dnf install ./persistwise-desktop-<version>-1.x86_64.rpm`.
+* **Arch**: download `persistwise-desktop-bin-<version>-1-x86_64.pkg.tar.zst` and run
+  `sudo pacman -U ./persistwise-desktop-bin-<version>-1-x86_64.pkg.tar.zst`,
+  or download `PKGBUILD` into an empty folder and run `makepkg -si`.
 * **autonomix-cli**: `autonomix-cli add https://github.com/ninepointlabs/persistwise-desktop`
   ([autonomix-cli](https://github.com/ninepointlabs/autonomix-cli)).
 
@@ -161,6 +169,7 @@ cargo test --workspace                   # tests (no network needed)
 npx tauri dev                            # run the app
 ./scripts/build-appimage.sh              # dist/*.AppImage (+ .zsync, .sha256)
 ./scripts/build-flatpak.sh               # dist/*.flatpak (needs flatpak)
+./scripts/build-linux-packages.sh        # dist/*.deb, *.rpm, PKGBUILD (needs dpkg-dev, rpm)
 pwsh scripts/build-msix.ps1              # Windows: dist\*.msix (needs Windows SDK)
 ```
 
