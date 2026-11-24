@@ -1,11 +1,32 @@
 # Persistwise Desktop — STATUS
 
-STATUS: PR open, ready for Tim to review (not merged, not tagged, nothing released or submitted)
+STATUS: v0.1.0 released (Linux). Windows/MSIX and store work not started.
 
 - Repo (private): https://github.com/ninepointlabs/persistwise-desktop
-- PR (open, unmerged): https://github.com/ninepointlabs/persistwise-desktop/pull/1 (feat/v0.1 → main)
-- `main` holds only a stub README and the MIT LICENSE. All work is on `feat/v0.1`.
-- Last updated: 2026-11-23
+- PR #1 (v0.1, feat/v0.1 → main): merged 2026-11-24, merge commit fcd02f1.
+- PR #2 (.deb, .rpm, Arch package): https://github.com/ninepointlabs/persistwise-desktop/pull/2, merged by Tim 2026-11-24 10:33 AM CT.
+- Release: https://github.com/ninepointlabs/persistwise-desktop/releases/tag/v0.1.0
+- Last updated: 2026-11-24
+
+## v0.1.0 release assets (`gh release view v0.1.0 --json assets`, 2026-11-24)
+
+| Asset | Size | From |
+| --- | --- | --- |
+| persistwise-desktop-0.1.0-x86_64.AppImage (+ .sha256, .zsync) | 83 MB | release run 45429530312 |
+| persistwise-desktop-0.1.0-x86_64.flatpak (+ .sha256) | 3.5 MB | release run 45429530312 |
+| persistwise-desktop_0.1.0_amd64.deb (+ .sha256) | 3.5 MB | manual run 45438522539 |
+| persistwise-desktop-0.1.0-1.x86_64.rpm (+ .sha256) | 4.7 MB | manual run 45438522539 |
+| persistwise-desktop-bin-0.1.0-1-x86_64.pkg.tar.zst (+ .sha256) | 4.6 MB | manual run 45438522539 |
+| PKGBUILD | 1.3 KB | manual run 45438522539 |
+
+The manual run (workflow_dispatch, tag v0.1.0) added only the missing files; the AppImage and Flatpak assets from the release run were not replaced.
+
+### Native packages (PR #2)
+
+- `scripts/build-linux-packages.sh` builds the .deb (dpkg-deb, dependencies from `dpkg-shlibdeps`) and .rpm (rpmbuild, requires generated from the binary) from the ubuntu-22.04 release binary (highest glibc symbol: 2.34), plus a PKGBUILD that packages the release .deb (checksum filled in). The `arch` CI job builds the .pkg.tar.zst from it with makepkg as a non-root user in `archlinux:base-devel`.
+- Desktop file, icons and metainfo are installed under the app id `com.ninepointlabs.Persistwise` (matches the Wayland app_id and the AppStream launchable). That is why Tauri's deb/rpm bundler is not used: it names the entry `Persistwise.desktop` with `Icon=persistwise-desktop`.
+- CI install checks, all green on PR #2 and on run 45438522539: install with dpkg -i + apt-get -f install (Ubuntu 22.04, 24.04, Debian 12), dnf (Fedora), pacman -U (Arch); then `ldd` has no missing libraries, `--version` and `--self-test` run; deb/rpm also uninstall cleanly. No GUI start tested on these distros.
+- `attach` now uploads only files the release does not already have (no `--clobber`); it never deletes or replaces an asset.
 
 ## What v0.1 does
 
@@ -17,7 +38,7 @@ STATUS: PR open, ready for Tim to review (not merged, not tagged, nothing releas
 | 4. IPFS settings page | Done. Off by default. "My own node" (IPFS Desktop / Kubo RPC, or a hosted Kubo-compatible RPC with the user's token) or "My own Pinata key". Test connection, pin-on-save, gateway, links to setup docs. Never reads the web app's `PINATA_JWT`. |
 | 5. Import from the web account | Done as a **one-time migration** (Tim: "just a tool to get set up one time"): read-only script `tools/web-export/export_archive.rb`, run once with `bin/rails runner` against the web app, writes the export zip; desktop imports it (UI or `--import`). Tested end to end against a throwaway copy of the web code with fake data. No web code changed. Steps: `docs/web-migration.md`. |
 | Feed polling (added on Tim's direction) | Done. Follow RSS/Atom/JSON feeds (or a site that links its feed); every new post is saved, sent to Wayback, pinned if IPFS is set up. Checked every 15 min while open; Linux opt-in systemd **user** timer runs `--poll` when the app is closed. Failed downloads retried, backups retried ~hourly, lock file so two pollers never overlap. Imported feeds keep being checked. |
-| 6. Packaging | AppImage: built and checked locally (see below). Flatpak: manifest + script + CI job written, **not built locally** (no flatpak here). MSIX: manifest, Store assets, script + CI job written, **not built** (no Windows here). |
+| 6. Packaging | Linux: AppImage, Flatpak bundle, .deb, .rpm and Arch package built in CI and attached to v0.1.0 (see above). MSIX: manifest, Store assets, script + CI job written, **not built or tested on Windows**. |
 
 ## Stack and why
 
@@ -72,14 +93,14 @@ CI (`.github/workflows/`): `linux.yml` (tests, AppImage on ubuntu-22.04, AppImag
 - [x] Child env: the app process has the bundled `LD_LIBRARY_PATH`/`GTK_PATH`; `--print-child-env` shows children get the host values back (none of the bundled paths).
 - [x] `--install-desktop-entry` / `--remove-desktop-entry` in a temp `XDG_DATA_HOME`: desktop file + 9 icons created, `Exec` = quoted `$APPIMAGE`, validates; removal leaves no files. Run from an extracted dir it explains and does nothing.
 - [ ] Omarchy dock/Walker grouping with the icon: app_id matches; I did not install the entry into Tim's real menu.
-- [ ] Release dry run in CI: not run (the attach job only runs on a published release or a tagged manual run).
+- [x] Release in CI: v0.1.0 release run 45429530312 attached the AppImage and Flatpak files; manual run 45438522539 added the native packages.
 - Size: 104 MB (WebKitGTK + GTK bundled).
 
 ## Packaging status and exact remaining steps
 
-**AppImage**: done locally. Remaining: run `linux.yml` once (Actions → Linux → Run workflow) to get the glibc-2.35 build and the CI checks. Tauri's bundler downloads linuxdeploy from tauri-apps' own pinned release URLs plus `linuxdeploy-plugin-appimage` from a `continuous` URL (not hash-pinned by Tauri); appimagetool 1.9.1 is pinned by SHA-256 in `scripts/build-appimage.sh`.
+**AppImage**: done locally. Released from the ubuntu-22.04 CI build (glibc 2.35) with the CI checks. Tauri's bundler downloads linuxdeploy from tauri-apps' own pinned release URLs plus `linuxdeploy-plugin-appimage` from a `continuous` URL (not hash-pinned by Tauri); appimagetool 1.9.1 is pinned by SHA-256 in `scripts/build-appimage.sh`.
 
-**Flatpak bundle (self-hosted, never Flathub)**: `packaging/flatpak/com.ninepointlabs.Persistwise.yml` (GNOME 50 runtime, network + Wayland/X11 + DRI, no home access) and `scripts/build-flatpak.sh`. Remaining: run `linux.yml`; then install the bundle on a test machine and check the file-chooser portal (import) and that "Open original" opens the browser.
+**Flatpak bundle (self-hosted, never Flathub)**: `packaging/flatpak/com.ninepointlabs.Persistwise.yml` (GNOME 50 runtime, network + Wayland/X11 + DRI, no home access) and `scripts/build-flatpak.sh`. Built and self-tested in CI and attached to v0.1.0. Remaining: install the bundle on a desktop test machine and check the file-chooser portal (import) and that "Open original" opens the browser.
 
 **MSIX / Microsoft Store**: `packaging/windows/msix/AppxManifest.xml` (full-trust Win32, `internetClient`, Windows 10 1809+), Store logo assets, `scripts/build-msix.ps1`, `windows.yml`. Remaining, in order:
 1. Tim: a Partner Center developer account (company accounts may have a registration fee depending on account type; that is Tim's call, I created nothing).
@@ -124,12 +145,20 @@ None right now.
 
 ## Not done / could not do
 
-- No Flatpak or MSIX build was produced (no flatpak or Windows on this machine). Both are scripted and in CI, untested.
+- No MSIX build was produced (no Windows here). The Flatpak is built and self-tested in CI but not installed on a desktop machine (portal file chooser and "Open original" untested).
 - appimagelint not run locally; CI runs it report-only.
-- No release, tag, store submission, Partner Center or Stripe work (by design).
+- No store submission, Partner Center or Stripe work (by design). The v0.1.0 release and tag were created by Tim.
 - Could not screenshot the real app window (`grim` hangs from this session), so real-window checks are the in-webview `--smoke-test` plus mocked-UI screenshots.
 - I did not change, branch, deploy or read secrets from the web Persistwise repo. I read its README, `db/schema.rb`, `config/routes.rb`, the models, the archive jobs, `SavedCopiesController` and the FAQ text. I did not read `PLAN.md` closely (the README covered what I needed), and I did not touch `storage/archives/` or any `.env`.
 
-## PR
+## PRs
 
-https://github.com/ninepointlabs/persistwise-desktop/pull/1 — open, not merged. Merging, tagging, releasing and any store submission each wait for Tim.
+- https://github.com/ninepointlabs/persistwise-desktop/pull/1 — merged (fcd02f1).
+- https://github.com/ninepointlabs/persistwise-desktop/pull/2 — merged.
+
+Store submission and anything Windows still wait for Tim.
+
+## Recommendations (not done)
+
+- Two older checks in `.github/workflows/linux.yml` (`! grep -E "\.mount_|appimage_extracted" child-env.txt` and `! grep "not found" flatpak-ldd.txt`) cannot fail the step under `set -e`; rewrite them as `if grep …; then exit 1; fi`.
+- I did not read or edit the v0.1.0 release notes; check that they mention the .deb, .rpm and Arch package and keep the autonomix-cli install line.
