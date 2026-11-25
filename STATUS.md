@@ -6,7 +6,8 @@ STATUS: v0.1.0 released (Linux). Windows/MSIX and store work not started.
 - PR #1 (v0.1, feat/v0.1 → main): merged 2026-11-24, merge commit fcd02f1.
 - PR #2 (.deb, .rpm, Arch package): https://github.com/ninepointlabs/persistwise-desktop/pull/2, merged by Tim 2026-11-24 10:33 AM CT.
 - Release: https://github.com/ninepointlabs/persistwise-desktop/releases/tag/v0.1.0
-- Last updated: 2026-11-24
+- PR #6 (CI grep checks fix): https://github.com/ninepointlabs/persistwise-desktop/pull/6, open, CI green, not merged.
+- Last updated: 2026-11-25
 
 ## v0.1.0 release assets (`gh release view v0.1.0 --json assets`, 2026-11-24)
 
@@ -158,7 +159,11 @@ None right now.
 
 Store submission and anything Windows still wait for Tim.
 
+## CI grep checks (PR #6, 2026-11-25)
+
+- `.github/workflows/linux.yml`: the AppImage child-env check and the Flatpak `ldd` "not found" check were `! grep …`, which never trips `set -e`. Now `if grep …; then echo "::error::…"; exit 1; fi`, each preceded by `test -s <file>` so a missing or empty input file fails too.
+- CI on PR #6: Linux run 45653026885 (build incl. "AppImage checks" and "Flatpak checks", deb/rpm/arch checks) and Windows run 45653026809 all passed; `attach` skipped (not a tag).
+
 ## Recommendations (not done)
 
-- Two older checks in `.github/workflows/linux.yml` (`! grep -E "\.mount_|appimage_extracted" child-env.txt` and `! grep "not found" flatpak-ldd.txt`) cannot fail the step under `set -e`; rewrite them as `if grep …; then exit 1; fi`.
 - I did not read or edit the v0.1.0 release notes; check that they mention the .deb, .rpm and Arch package and keep the autonomix-cli install line.
