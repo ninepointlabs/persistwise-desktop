@@ -71,7 +71,10 @@ jobs:
           xvfb-run -a dbus-run-session -- "$AI" --appimage-extract-and-run --smoke-test
           # Children must not inherit the bundled library paths.
           "$AI" --appimage-extract-and-run --print-child-env > child-env.txt
-          ! grep -E "\.mount_|appimage_extracted" child-env.txt
+          test -s child-env.txt || { echo "::error::child-env.txt is missing or empty"; exit 1; }
+          if grep -E "\.mount_|appimage_extracted" child-env.txt; then
+            echo "::error::child environment still points into the AppImage"; exit 1
+          fi
           # Opt-in desktop integration, in a temp XDG_DATA_HOME.
           export XDG_DATA_HOME=$(mktemp -d)
           APPIMAGE="$PWD/$AI" build/appimage/squashfs-root/AppRun --install-desktop-entry
@@ -111,7 +114,10 @@ jobs:
           flatpak install --user -y --noninteractive dist/persistwise-desktop-*-x86_64.flatpak
           # Every library (WebKitGTK 4.1 above all) must come from the runtime.
           flatpak run --command=sh com.ninepointlabs.Persistwise -c 'ldd /app/bin/persistwise-desktop' | tee flatpak-ldd.txt
-          ! grep "not found" flatpak-ldd.txt
+          test -s flatpak-ldd.txt || { echo "::error::flatpak-ldd.txt is missing or empty"; exit 1; }
+          if grep "not found" flatpak-ldd.txt; then
+            echo "::error::Flatpak binary has unresolved libraries"; exit 1
+          fi
           flatpak run com.ninepointlabs.Persistwise --self-test
           du -h dist/*.flatpak
 
