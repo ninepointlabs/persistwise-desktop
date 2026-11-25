@@ -14,6 +14,9 @@
       <label class="check" title="Also ask the Internet Archive's public Save Page Now to capture this page">
         <input id="save-wayback" type="checkbox"> Also send to the Wayback Machine
       </label>
+      <label class="check" title="Follow the page's next-page links (forum threads, paginated posts) and save every page, up to 100, as one item">
+        <input id="save-thread" type="checkbox"> Save the whole thread
+      </label>
       <button id="save-btn" type="submit" class="primary">Save</button>
     </form>
   </header>
@@ -62,6 +65,7 @@
           <div id="reader-actions" class="reader-actions"></div>
         </div>
         <div id="reader-meta" class="reader-meta"></div>
+        <div id="thread-nav" class="thread-nav" hidden></div>
         <iframe id="reader-frame" title="Saved copy" sandbox="" referrerpolicy="no-referrer"></iframe>
       </section>
 
@@ -131,7 +135,13 @@
 
         <h2>Storage</h2>
         <p>Your archive lives in <code id="data-dir"></code>. Back up that folder to back up everything.</p>
-        <button id="open-data">Open data folder</button>
+        <div class="row">
+          <button id="open-data">Open data folder</button>
+          <button id="folder-choose">Choose a different folder…</button>
+          <button id="folder-default" hidden>Use the default folder</button>
+        </div>
+        <p class="hint" id="folder-hint"></p>
+        <div id="folder-choice" class="callout folder-choice" hidden></div>
       </section>
 
       <section id="view-about" class="view prose" hidden>

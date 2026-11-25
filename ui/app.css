@@ -156,3 +156,9 @@ button.mini { padding: 0 7px; margin-left: 4px; font-size: 14px; line-height: 22
 .feed-header .err { color: var(--bad); }
 select { font: inherit; color: inherit; background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 6px 8px; }
 #feeds { display: flex; flex-direction: column; gap: 2px; }
+.thread-nav { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--border); background: var(--bg2); font-size: 13px; }
+.thread-nav .spacer { flex: 1; }
+.thread-nav .note { color: var(--warn); font-size: 12.5px; }
+.badge.thread { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.folder-choice .row { margin: 8px 0 0; }
+.folder-choice p { margin: 0 0 6px; }

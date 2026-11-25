@@ -89,10 +89,95 @@ Microsoft Edge WebView2 runtime (built into Windows 11).
   page can be captured; if it declines because the page was captured recently,
   Persistwise links the newest existing snapshot. A failed backup never affects
   the local copy, and you can try again from the page.
-* **Where it lives.** `~/.local/share/persistwise` on Linux
-  (`~/.var/app/com.ninepointlabs.Persistwise/data/persistwise` for the Flatpak),
-  `%APPDATA%\Nine Point Labs\Persistwise\data` on Windows. Back up that folder
-  to back up everything. `PERSISTWISE_DATA_DIR` overrides it.
+* **Where it lives.** One folder holds everything (see
+  [Where your archive lives](#where-your-archive-lives)); back up that folder
+  to back up everything.
+
+## Saving a whole forum thread
+
+Tick **Save the whole thread** next to the address before pressing Save.
+Persistwise saves the page, then follows the thread's next-page links and saves
+every page, each as its own full offline copy, and shows them as **one item**
+in your archive (title, address, number of pages, date). Open it to read the
+pages in order, with Previous page / Next page and a page picker. Search finds
+text on any page and opens the right page. Plain Save (box unticked) still
+saves just the one page.
+
+* **How the next page is found.** A `Link: …; rel="next"` header,
+  `<link rel="next">` or `<a rel="next">` first; then a link that says "Next"
+  (by its text, title or class) and stays in the same thread; then the next
+  page number in a common form (`?page=2`, `&start=15`, `/page-2`, `/page/2`).
+  That covers typical phpBB, vBulletin, XenForo, MyBB, Discourse and
+  WordPress-style pagination without anything site-specific.
+* **Limits.** Only pages on the same site are followed. It stops when there is
+  no next page, when a link leads back to a page already saved in this run,
+  or after **100 pages**; then the item is marked *partial thread*. Pages are
+  fetched one at a time with a short pause between them. The usual size caps
+  apply to each page.
+* **If a page fails**, the pages already saved are kept and the item is
+  marked partial, with the reason.
+* **Not a thread?** If no next page is found, the one page is saved as a
+  normal page and Persistwise says it did not look like a multi-page thread.
+* **Saving again** reuses pages that are already in your archive instead of
+  storing them twice (so the newest posts on a page already saved are not
+  picked up again; delete that page first to get a fresh copy).
+* **Wayback and IPFS** work as for a single page, for every page of the
+  thread: Wayback when "Also send to the Wayback Machine" is ticked, IPFS when
+  pin-on-save is on. They run one page at a time after the save.
+
+## Where your archive lives
+
+By default:
+
+| | Folder |
+| --- | --- |
+| Linux | `~/.local/share/persistwise` (respects `XDG_DATA_HOME`) |
+| Flatpak | `~/.var/app/com.ninepointlabs.Persistwise/data/persistwise` |
+| Windows | `%APPDATA%\Nine Point Labs\Persistwise\data` |
+
+To keep it somewhere else (another disk, a synced folder), open
+**Settings → Storage → Choose a different folder…** and pick a folder:
+
+* A folder that **already holds a Persistwise archive** is opened as it is.
+  Nothing is merged or overwritten, and your current archive stays where it is.
+* An **empty** folder offers three choices: **Move** your archive there
+  (recommended: one archive; the old copy is removed only after the new one
+  is checked, and a small `persistwise-moved.json` note is left behind so a
+  later start finds the new folder), **Copy** it there (both stay usable;
+  Persistwise uses the new one), or **Start fresh** (an empty archive; the
+  old folder, including your settings and keys, is left alone).
+* A folder with other files in it, a folder inside the current archive, or a
+  folder Persistwise cannot write to is refused. Create a new empty folder in
+  the folder picker instead.
+
+**Use the default folder** in the same place goes back. The app switches over
+straight away; if "Keep checking feeds when Persistwise is closed" is on, its
+timer is pointed at the new folder.
+
+Because `settings.json` lives inside the archive, the chosen folder is
+remembered in a small file outside it: `~/.config/persistwise/archive-location.json`
+on Linux (respects `XDG_CONFIG_HOME`; Flatpak:
+`~/.var/app/com.ninepointlabs.Persistwise/config/persistwise/`), and
+`%APPDATA%\Nine Point Labs\Persistwise\config\archive-location.json` on
+Windows. Delete that file to go back to the default folder. If the chosen
+folder is missing when Persistwise starts (an unplugged drive), Persistwise
+says so and exits instead of starting a second, empty archive.
+
+The folder is decided in this order, for the window and for `--poll`,
+`--import`, `--self-test` and `--smoke-test` alike:
+
+1. `PERSISTWISE_DATA_DIR`, if set (portable use, tests). While it is set the
+   folder cannot be changed in Settings.
+2. The folder chosen in Settings.
+3. The default above.
+
+**Flatpak:** the Flatpak has no access to your home folder. A folder you pick
+is shared with it through the desktop's file-chooser portal (the document
+portal), which remembers the grant across restarts; Persistwise stores the
+portal's path for it (under `/run/user/<uid>/doc/…`). If that grant is ever
+removed (for example with `flatpak permission-reset com.ninepointlabs.Persistwise`),
+Persistwise reports the folder as unavailable at start; delete the
+`archive-location.json` above, start it, and choose the folder again.
 
 ## IPFS (optional)
 
@@ -155,6 +240,9 @@ format: [docs/import-format.md](docs/import-format.md).
 * Imported copies need the network for their images until Persistwise has
   embedded them (a batch per feed check), and images that have since vanished
   from the original site cannot be recovered.
+* Thread saving follows next-page links in the HTML the site sends. Forums
+  that only load later pages with JavaScript (infinite scroll with no page
+  links) save as a single page.
 * No mobile app yet.
 
 ## Build from source

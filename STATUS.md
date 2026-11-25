@@ -7,6 +7,7 @@ STATUS: v0.1.0 released (Linux). Windows/MSIX and store work not started.
 - PR #2 (.deb, .rpm, Arch package): https://github.com/ninepointlabs/persistwise-desktop/pull/2, merged by Tim 2026-11-24 10:33 AM CT.
 - Release: https://github.com/ninepointlabs/persistwise-desktop/releases/tag/v0.1.0
 - PR #6 (CI grep checks fix): https://github.com/ninepointlabs/persistwise-desktop/pull/6, open, CI green, not merged.
+- Next (open, not merged): save a whole multi-page thread as one item, and a user-chosen archive folder (schema v4; brief `designer-briefs/persistwise-desktop-thread-and-folder.md`). Branch `feat/thread-save-and-archive-folder`.
 - Last updated: 2026-11-25
 
 ## v0.1.0 release assets (`gh release view v0.1.0 --json assets`, 2026-11-24)
@@ -52,7 +53,7 @@ The manual run (workflow_dispatch, tag v0.1.0) added only the missing files; the
 - UI has no npm dependencies and no build step (`ui/`); npm is only used for the pinned Tauri CLI.
 - No telemetry anywhere. The only network traffic is fetching pages the user saves, plus SPN/IPFS when the user turns them on.
 
-Data: `~/.local/share/persistwise` (Linux), `%APPDATA%\Nine Point Labs\Persistwise\data` (Windows), `~/.var/app/com.ninepointlabs.Persistwise/data/persistwise` (Flatpak); `PERSISTWISE_DATA_DIR` overrides. One SQLite file plus `pages/<ab>/<uid>.<ext>`.
+Data: by default `~/.local/share/persistwise` (Linux), `%APPDATA%\Nine Point Labs\Persistwise\data` (Windows), `~/.var/app/com.ninepointlabs.Persistwise/data/persistwise` (Flatpak). The user can choose another folder in Settings → Storage (open an existing archive, or move / copy / start fresh); the choice is kept outside the archive in `archive-location.json` in the app's config folder. Order: `PERSISTWISE_DATA_DIR`, then the chosen folder, then the default. One SQLite file plus `pages/<ab>/<uid>.<ext>`.
 
 ## How to run and build
 

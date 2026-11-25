@@ -15,6 +15,8 @@ const state = {
   pages: [],
   offset: 0,
   current: null,
+  // The thread the reader is showing, when the current page is part of one.
+  thread: null,
   platform: "linux",
   settings: null,
 };
@@ -88,6 +90,7 @@ function badges(p) {
   if (p.wayback_status !== "off") out.push(h("span", { class: `badge ${p.wayback_status}` }, BADGE_TEXT.wayback[p.wayback_status] || p.wayback_status));
   if (p.ipfs_status !== "off") out.push(h("span", { class: `badge ${p.ipfs_status}` }, BADGE_TEXT.ipfs[p.ipfs_status] || p.ipfs_status));
   if (p.origin === "import") out.push(h("span", { class: "badge" }, "Imported"));
+  if (p.thread_status === "partial") out.push(h("span", { class: "badge pending", title: "Not every page of this thread could be saved" }, "Partial thread"));
   return h("div", { class: "badges" }, out);
 }
 
@@ -241,15 +244,24 @@ function renderPages(hasMore) {
 }
 
 function pageItem(p) {
+  // Without a search, a thread shows as one item (its first page stands in
+  // for it); a search hit inside a thread says which page it is on.
+  const asThread = p.thread_id != null && !p.snippet && !state.query;
+  const threadTitle = p.thread_title || p.title || hostOf(p.url);
   const li = h("li", { class: "page", tabindex: "0", "data-id": String(p.id) },
-    h("h4", {}, p.title || hostOf(p.url)),
+    h("h4", {}, asThread ? threadTitle : (p.title || hostOf(p.url))),
     h("div", { class: "meta" },
       h("span", {}, hostOf(p.url)),
       p.feed_name ? h("span", {}, p.feed_name) : null,
-      h("span", {}, p.published_at ? `Published ${fmtDate(p.published_at)}` : `Saved ${fmtDate(p.saved_at)}`),
-      p.size_bytes ? h("span", {}, fmtBytes(p.size_bytes)) : null),
+      asThread ? h("span", {}, `${p.thread_page_count} page${p.thread_page_count === 1 ? "" : "s"}`) : null,
+      !asThread && p.thread_id != null ? h("span", {}, `Page ${p.thread_page} of ${p.thread_page_count} in “${threadTitle}”`) : null,
+      h("span", {}, asThread ? `Saved ${fmtDate(p.thread_saved_at || p.saved_at)}`
+        : p.published_at ? `Published ${fmtDate(p.published_at)}` : `Saved ${fmtDate(p.saved_at)}`),
+      !asThread && p.size_bytes ? h("span", {}, fmtBytes(p.size_bytes)) : null),
     p.snippet ? snippetNode(p.snippet) : null,
-    badges(p));
+    asThread ? h("div", { class: "badges" }, h("span", { class: "badge thread" }, "Thread"),
+      p.thread_status === "partial" ? h("span", { class: "badge pending", title: "Not every page of this thread could be saved" }, "Partial thread") : null)
+      : badges(p));
   li.addEventListener("click", () => openReader(p.id));
   li.addEventListener("keydown", (e) => { if (e.key === "Enter") openReader(p.id); });
   return li;
@@ -263,8 +275,32 @@ async function openReader(id) {
   const p = await invoke("get_page", { id });
   if (!p) return;
   state.current = p;
+  state.thread = p.thread_id != null ? await invoke("get_thread", { id: p.thread_id }) : null;
   renderReader(p, true);
   show("reader");
+  $("#main").scrollTop = 0;
+}
+
+function renderThreadNav(p) {
+  const nav = $("#thread-nav");
+  const t = state.thread;
+  if (!t || p.thread_id !== t.id) { nav.hidden = true; nav.replaceChildren(); return; }
+  const idx = t.pages.findIndex((x) => x.id === p.id);
+  const prev = t.pages[idx - 1];
+  const next = t.pages[idx + 1];
+  const select = h("select", { "aria-label": "Page of this thread" },
+    t.pages.map((x, i) => h("option", { value: String(x.id), selected: x.id === p.id }, `Page ${i + 1} of ${t.pages.length}`)));
+  select.addEventListener("change", () => openReader(Number(select.value)));
+  nav.hidden = false;
+  nav.replaceChildren(
+    h("strong", {}, "Thread"),
+    h("button", { disabled: !prev, onclick: () => prev && openReader(prev.id) }, "‹ Previous page"),
+    select,
+    h("button", { disabled: !next, onclick: () => next && openReader(next.id) }, "Next page ›"),
+    t.status === "partial" ? h("span", { class: "note", title: t.note || "" }, `Partial thread${t.note ? `: ${t.note}` : ""}`) : null,
+    h("span", { class: "spacer" }),
+    h("button", { class: "danger", onclick: () => deleteThread(t) }, "Delete thread"),
+  );
 }
 
 async function renderReader(p, reloadFrame) {
@@ -280,8 +316,9 @@ async function renderReader(p, reloadFrame) {
     p.origin === "import" && p.local_path && !p.localized_at && p.content_type === "text/html"
       ? h("button", { onclick: (e) => embedImages(p.id, e.target) }, "Embed images now") : null,
     p.local_path ? h("button", { onclick: () => invoke("open_saved_file", { id: p.id }).catch((e) => alert(e)) }, "Open file") : null,
-    h("button", { class: "danger", onclick: () => deletePage(p) }, "Delete"),
+    h("button", { class: "danger", onclick: () => deletePage(p) }, p.thread_id != null ? "Delete this page" : "Delete"),
   ].filter(Boolean));
+  renderThreadNav(p);
   const meta = $("#reader-meta");
   meta.replaceChildren(...[
     h("span", {}, `Saved ${fmtDate(p.saved_at)}`),
@@ -340,6 +377,16 @@ async function refreshCurrent(id) {
   if (p && idx >= 0) { state.pages[idx] = { ...p, snippet: state.pages[idx].snippet }; renderPages(!$("#more").hidden); }
 }
 
+async function deleteThread(t) {
+  if (!confirm(`Delete all ${t.pages.length} saved pages of the thread “${t.title || t.url}” from this computer? This cannot be undone. (Wayback and IPFS copies are not affected.)`)) return;
+  await invoke("delete_thread", { id: t.id });
+  state.current = null;
+  state.thread = null;
+  await refreshSidebar();
+  await loadPages();
+  show("pages");
+}
+
 async function deletePage(p) {
   if (!confirm(`Delete the saved copy of “${p.title || p.url}” from this computer? This cannot be undone. (Wayback and IPFS copies are not affected.)`)) return;
   await invoke("delete_page", { id: p.id });
@@ -358,13 +405,22 @@ $("#save-form").addEventListener("submit", async (e) => {
   if (!url) return;
   if (!/^https?:\/\//i.test(url)) url = `https://${url}`;
   const btn = $("#save-btn");
+  const wholeThread = $("#save-thread").checked;
   btn.disabled = true;
   btn.textContent = "Saving…";
-  setStatus(`Saving ${url} …`);
+  setStatus(wholeThread ? `Saving page 1 of … (${url})` : `Saving ${url} …`);
   try {
-    const page = await invoke("save_page", { url, wayback: $("#save-wayback").checked });
-    input.value = "";
-    setStatus(`Saved “${page.title || url}”${page.assets_failed ? ` (${page.assets_failed} resources could not be fetched)` : ""}.`);
+    if (wholeThread) {
+      const r = await invoke("save_thread", { url, wayback: $("#save-wayback").checked });
+      input.value = "";
+      $("#save-thread").checked = false;
+      const title = r.thread?.title || r.pages[0]?.title || url;
+      setStatus(`“${title}”: ${r.message}`);
+    } else {
+      const page = await invoke("save_page", { url, wayback: $("#save-wayback").checked });
+      input.value = "";
+      setStatus(`Saved “${page.title || url}”${page.assets_failed ? ` (${page.assets_failed} resources could not be fetched)` : ""}.`);
+    }
     state.query = "";
     $("#search").value = "";
     state.feedId = null;
@@ -377,6 +433,12 @@ $("#save-form").addEventListener("submit", async (e) => {
     btn.disabled = false;
     btn.textContent = "Save";
   }
+});
+
+listen("thread-progress", (e) => {
+  const p = e.payload;
+  setStatus(`Saving page ${p.page} of … (${p.url})`);
+  $("#save-btn").textContent = `Page ${p.page}…`;
 });
 
 // ---------- search & nav ----------
@@ -459,11 +521,101 @@ function fillSettings(view) {
 }
 
 async function loadSettings() {
-  const [view, info, bg] = await Promise.all([invoke("get_settings"), invoke("app_info"), invoke("background_status")]);
+  const [view, bg, loc] = await Promise.all([invoke("get_settings"), invoke("background_status"), invoke("archive_location")]);
   fillSettings(view);
-  $("#data-dir").textContent = info.data_dir;
+  fillLocation(loc);
   fillBackground(bg);
 }
+
+// ---------- archive folder ----------
+
+function fillLocation(loc) {
+  $("#data-dir").textContent = loc.path;
+  $("#folder-choose").disabled = loc.env_locked;
+  $("#folder-default").hidden = loc.is_default || loc.env_locked;
+  $("#folder-hint").textContent = loc.env_locked
+    ? "The PERSISTWISE_DATA_DIR environment variable sets this folder, so it cannot be changed here."
+    : loc.is_default ? "This is the default folder."
+    : `This is a folder you chose. The default is ${loc.default_path}.`;
+}
+
+function folderChoice(...children) {
+  const box = $("#folder-choice");
+  box.hidden = children.length === 0;
+  box.replaceChildren(...children);
+}
+
+async function afterFolderChange(res) {
+  folderChoice();
+  fillLocation(res.location);
+  $("#folder-hint").textContent = `Now using ${res.location.path}.` + (res.warning ? ` Note: ${res.warning}` : "");
+  state.current = null;
+  state.thread = null;
+  state.feedId = null;
+  state.query = "";
+  $("#search").value = "";
+  await refreshSidebar();
+  await loadPages();
+  const view = await invoke("get_settings");
+  fillSettings(view);
+  $("#save-wayback").checked = view.settings.wayback_on_save;
+  fillBackground(await invoke("background_status"));
+}
+
+async function changeFolder(path, how, btns) {
+  for (const b of btns) b.disabled = true;
+  $("#folder-hint").textContent = how === "move" ? "Moving your archive… (large archives take a while)"
+    : how === "copy" ? "Copying your archive… (large archives take a while)" : "Switching…";
+  try {
+    await afterFolderChange(await invoke("change_archive_folder", { path, how }));
+  } catch (e) {
+    $("#folder-hint").textContent = `Could not change the folder: ${e}`;
+    for (const b of btns) b.disabled = false;
+  }
+}
+
+function offerFolder(check) {
+  const where = check.is_default ? `the default folder (${check.path})` : check.path;
+  if (check.kind === "existing") {
+    const open = h("button", { class: "primary" }, "Open that archive");
+    const cancel = h("button", { onclick: () => folderChoice() }, "Cancel");
+    open.addEventListener("click", () => changeFolder(check.path, "open", [open, cancel]));
+    folderChoice(
+      h("p", {}, h("strong", {}, `${where} already holds a Persistwise archive.`)),
+      h("p", { class: "hint" }, "Persistwise will open it as it is. Your current archive stays where it is, untouched; nothing is merged or overwritten."),
+      h("div", { class: "row" }, open, cancel));
+    return;
+  }
+  const move = h("button", { class: "primary" }, "Move my archive there (recommended)");
+  const copy = h("button", {}, "Copy it there");
+  const fresh = h("button", {}, "Start a fresh, empty archive there");
+  const cancel = h("button", { class: "ghost", onclick: () => folderChoice() }, "Cancel");
+  const all = [move, copy, fresh, cancel];
+  move.addEventListener("click", () => changeFolder(check.path, "move", all));
+  copy.addEventListener("click", () => changeFolder(check.path, "copy", all));
+  fresh.addEventListener("click", () => changeFolder(check.path, "fresh", all));
+  folderChoice(
+    h("p", {}, h("strong", {}, `Use ${where} for your archive?`)),
+    h("p", { class: "hint" }, "Move: everything (pages, feeds, settings and keys) goes to the new folder and is removed from the old one once the copy is checked, so you keep one archive. "
+      + "Copy: the old folder keeps a full copy too. Start fresh: an empty archive; your current one stays where it is."),
+    h("div", { class: "row" }, move, copy, fresh, cancel));
+}
+
+$("#folder-choose").addEventListener("click", async () => {
+  folderChoice();
+  try {
+    const check = await invoke("pick_archive_folder");
+    if (check) offerFolder(check);
+  } catch (e) {
+    $("#folder-hint").textContent = `That folder cannot be used: ${e}`;
+  }
+});
+
+$("#folder-default").addEventListener("click", async () => {
+  folderChoice();
+  try { offerFolder(await invoke("check_default_folder")); }
+  catch (e) { $("#folder-hint").textContent = `The default folder cannot be used: ${e}`; }
+});
 
 function fillBackground(bg) {
   const box = $("#bg-enabled");

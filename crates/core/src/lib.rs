@@ -6,15 +6,19 @@
 //! * [`wayback`]: optional backup through the public Save Page Now.
 //! * [`ipfs`]: optional pinning through the user's own node or key.
 //! * [`import`]: bring in a Persistwise web account export.
+//! * [`thread`]: save every page of a multi-page thread as one item.
+//! * [`location`]: where the archive lives, and moving it.
 
 pub mod capture;
 pub mod feeds;
 pub mod http;
 pub mod import;
 pub mod ipfs;
+pub mod location;
 pub mod settings;
 pub mod store;
 pub mod text;
+pub mod thread;
 pub mod util;
 pub mod wayback;
 
