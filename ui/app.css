@@ -154,21 +154,22 @@ button.mini { padding: 0 7px; margin-left: 4px; font-size: 14px; line-height: 22
 .feed-header h2 { margin: 0 0 4px; font-size: 18px; }
 .feed-header .meta { color: var(--muted); font-size: 12.5px; display: flex; gap: 12px; flex-wrap: wrap; }
 .feed-header .err { color: var(--bad); }
-select { font: inherit; color: inherit; background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 6px 8px; }
 #feeds { display: flex; flex-direction: column; gap: 2px; }
 .thread-nav { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--border); background: var(--bg2); font-size: 13px; }
-/* WebKitGTK draws a native (light) select unless appearance is off; match the buttons beside it. */
-.thread-nav select {
+/* WebKitGTK draws a native (light) select unless appearance is off; style it like a button. */
+select {
   -webkit-appearance: none; appearance: none;
+  font: inherit; color: inherit;
   background-color: var(--bg3);
   background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%);
   background-position: right 14px center, right 9px center;
   background-size: 5px 5px; background-repeat: no-repeat;
+  border: 1px solid var(--border); border-radius: var(--radius);
   padding: 6px 28px 6px 12px; cursor: pointer;
 }
-.thread-nav select:hover { border-color: var(--accent); }
-.thread-nav select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.thread-nav select option { background: var(--bg2); color: var(--fg); }
+select:hover { border-color: var(--accent); }
+select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+select option { background: var(--bg2); color: var(--fg); }
 .thread-nav .spacer { flex: 1; }
 .thread-nav .note { color: var(--warn); font-size: 12.5px; }
 .badge.thread { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
