@@ -292,7 +292,8 @@ function renderThreadNav(p) {
     t.pages.map((x, i) => h("option", { value: String(x.id), selected: x.id === p.id }, `Page ${i + 1} of ${t.pages.length}`)));
   select.addEventListener("change", () => openReader(Number(select.value)));
   nav.hidden = false;
-  nav.replaceChildren(
+  // replaceChildren would print a null child as the text "null".
+  nav.replaceChildren(...[
     h("strong", {}, "Thread"),
     h("button", { disabled: !prev, onclick: () => prev && openReader(prev.id) }, "‹ Previous page"),
     select,
@@ -300,7 +301,7 @@ function renderThreadNav(p) {
     t.status === "partial" ? h("span", { class: "note", title: t.note || "" }, `Partial thread${t.note ? `: ${t.note}` : ""}`) : null,
     h("span", { class: "spacer" }),
     h("button", { class: "danger", onclick: () => deleteThread(t) }, "Delete thread"),
-  );
+  ].filter(Boolean));
 }
 
 async function renderReader(p, reloadFrame) {
