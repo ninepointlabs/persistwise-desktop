@@ -171,7 +171,9 @@ select:hover { border-color: var(--accent); }
 select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 select option { background: var(--bg2); color: var(--fg); }
 .thread-nav .spacer { flex: 1; }
-.thread-nav .note { color: var(--warn); font-size: 12.5px; }
+.thread-nav > :not(.note):not(.spacer) { flex: none; white-space: nowrap; }
+/* A long partial-thread note shrinks to one line; the full text is in its tooltip. */
+.thread-nav .note { color: var(--warn); font-size: 12.5px; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .badge.thread { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
 .folder-choice .row { margin: 8px 0 0; }
 .folder-choice p { margin: 0 0 6px; }
