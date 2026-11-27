@@ -784,6 +784,34 @@ const THEME_MAP = {
   "--fg": "foreground", "--muted": "dark_foreground", "--accent": "accent",
   "--sel": "selection", "--ok": "green", "--warn": "yellow", "--bad": "red",
 };
+// WCAG contrast helpers for "#rrggbb" colours.
+const hexRgb = (c) => /^#[0-9a-f]{6}$/i.test(c || "") ? [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16)) : null;
+const rgbHex = (rgb) => "#" + rgb.map((v) => Math.round(v).toString(16).padStart(2, "0")).join("");
+function luminance(rgb) {
+  const [r, g, b] = rgb.map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+function contrast(a, b) {
+  const [x, y] = [luminance(a), luminance(b)].sort((p, q) => q - p);
+  return (x + 0.05) / (y + 0.05);
+}
+// `colour`, or the least mix of it with black (on light surfaces) or white
+// (on dark ones) that reaches `min` (4.5:1, WCAG AA for small text) against
+// every surface it is drawn on. Mixing with black or white keeps its hue.
+function readable(colour, surfaces, min = 4.5) {
+  const c = hexRgb(colour);
+  const bgs = surfaces.map(hexRgb).filter(Boolean);
+  if (!c || !bgs.length) return colour;
+  const light = luminance(bgs[0]) > 0.18;
+  const to = light ? [0, 0, 0] : [255, 255, 255];
+  for (let step = 0; step <= 20; step++) {
+    const f = step / 20;
+    const mixed = c.map((v, i) => v + (to[i] - v) * f);
+    if (bgs.every((bg) => contrast(mixed, bg) >= min)) return step ? rgbHex(mixed) : colour;
+  }
+  return rgbHex(to);
+}
+
 let themeGen = null;
 async function applyTheme() {
   let t = null;
@@ -798,6 +826,11 @@ async function applyTheme() {
   for (const [cssVar, key] of Object.entries(THEME_MAP)) {
     if (t.colors[key]) root.setProperty(cssVar, t.colors[key]);
   }
+  // A theme's yellow is often too faint for small text, mostly on light
+  // backgrounds (Flexoki Light: under 2:1). Darken or lighten it until it
+  // is readable; it is used for the Partial thread badge and other warnings.
+  const surfaces = [t.colors.background, t.colors.dark_background, t.colors.lighter_background];
+  if (t.colors.yellow) root.setProperty("--warn", readable(t.colors.yellow, surfaces));
   root.setProperty("--border", t.colors.selection || t.colors.lighter_background || "");
   root.setProperty("--accent-fg", t.colors.background || "#000");
   root.setProperty("color-scheme", t.mode === "light" ? "light" : "dark");
