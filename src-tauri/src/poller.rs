@@ -44,7 +44,11 @@ impl Poller {
                     Err(RecvTimeoutError::Disconnected) => return,
                 };
                 // The archive may have moved since the last check.
-                let store: Arc<Store> = crate::current(&shared);
+                // No archive while its folder is missing (recovery screen).
+                let Some(store): Option<Arc<Store>> = crate::current(&shared) else {
+                    wait = Duration::from_secs(60);
+                    continue;
+                };
                 let minutes = settings::load(store.root()).feeds.poll_minutes;
                 wait = if minutes == 0 {
                     Duration::from_secs(3600)

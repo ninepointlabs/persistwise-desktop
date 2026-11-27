@@ -177,3 +177,7 @@ select option { background: var(--bg2); color: var(--fg); }
 .badge.thread { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
 .folder-choice .row { margin: 8px 0 0; }
 .folder-choice p { margin: 0 0 6px; }
+
+/* Recovery screen: shown instead of the app while the archive folder is missing. */
+.recovery { max-width: 720px; margin: 0 auto; padding: 32px 24px; overflow: auto; }
+body.recovering .layout, body.recovering .save-form { display: none; }

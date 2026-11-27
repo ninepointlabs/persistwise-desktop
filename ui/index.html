@@ -21,6 +21,21 @@
     </form>
   </header>
 
+  <section id="recovery" class="recovery prose" hidden>
+    <h1>Your archive folder is not available</h1>
+    <p>Persistwise cannot find the folder that holds your archive:</p>
+    <p><code id="recovery-path"></code></p>
+    <p class="hint" id="recovery-moved" hidden></p>
+    <p>If it is on a USB drive, external disk or network share that is not connected, reconnect it and press Retry. Nothing has been changed, and no new archive has been created.</p>
+    <div class="row">
+      <button id="recovery-retry" class="primary">Retry</button>
+      <button id="recovery-choose">Choose a different folder…</button>
+      <button id="recovery-default">Use the default folder</button>
+    </div>
+    <p class="hint" id="recovery-hint" role="status" aria-live="polite"></p>
+    <div id="recovery-choice" class="callout folder-choice" hidden></div>
+  </section>
+
   <div class="layout">
     <nav class="sidebar">
       <input id="search" type="search" placeholder="Search your archive" aria-label="Search your archive">

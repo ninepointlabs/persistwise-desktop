@@ -313,3 +313,236 @@ fn deleting_pages_and_threads() {
     assert!(store.thread(t.id).unwrap().is_none());
     assert_eq!(store.stats().unwrap().pages, 0);
 }
+
+/// A thread that grows between saves: `total` pages; page 2 carries
+/// `replies` (it is the last page after the first save, where new replies
+/// land); page `fail` (if not 0) answers 500.
+struct Growing {
+    server: Server,
+    total: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    replies: std::sync::Arc<std::sync::Mutex<String>>,
+    fail: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+fn growing(total: usize) -> Growing {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    let t = Arc::new(AtomicUsize::new(total));
+    let replies = Arc::new(Mutex::new(String::from("first reply")));
+    let fail = Arc::new(AtomicUsize::new(0));
+    let (t2, r2, f2) = (t.clone(), replies.clone(), fail.clone());
+    let server = Server::start(move |_m, url| {
+        let (path, query) = url.split_once('?').unwrap_or((url, ""));
+        if path != "/grow" {
+            return Reply::status(404);
+        }
+        let n: usize = query
+            .strip_prefix("page=")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1);
+        let total = t2.load(Ordering::SeqCst);
+        if n > total {
+            return Reply::status(404);
+        }
+        if n == f2.load(Ordering::SeqCst) {
+            return Reply::status(500);
+        }
+        let next = if n < total {
+            format!(r#"<link rel="next" href="/grow?page={}">"#, n + 1)
+        } else {
+            String::new()
+        };
+        let body = if n == 2 {
+            format!("page {n} of the grow thread; {}", r2.lock().unwrap())
+        } else {
+            format!("page {n} of the grow thread")
+        };
+        Reply::ok("text/html", page(&format!("Grow {n}"), &body, &next))
+    });
+    Growing {
+        server,
+        total: t,
+        replies,
+        fail,
+    }
+}
+
+impl Growing {
+    fn set_total(&self, n: usize) {
+        self.total.store(n, std::sync::atomic::Ordering::SeqCst);
+    }
+    fn set_replies(&self, s: &str) {
+        *self.replies.lock().unwrap() = s.to_string();
+    }
+    fn set_fail(&self, n: usize) {
+        self.fail.store(n, std::sync::atomic::Ordering::SeqCst);
+    }
+    /// Requests for exactly this path and query.
+    fn hits(&self, path_and_query: &str) -> usize {
+        self.server
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| s.url == path_and_query)
+            .count()
+    }
+    fn url(&self) -> String {
+        format!("{}/grow", self.server.base)
+    }
+}
+
+#[test]
+fn resave_refreshes_the_last_page_and_appends_new_ones() {
+    let g = growing(2);
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let (first, _) = save(&store, &g.url(), &opts());
+    let t1 = first.thread.unwrap();
+    assert_eq!(t1.pages.len(), 2);
+    let (p1, p2) = (t1.pages[0].clone(), t1.pages[1].clone());
+    assert_eq!((g.hits("/grow"), g.hits("/grow?page=2")), (1, 1));
+
+    // Two more pages appear, and page 2 gets a new reply.
+    g.set_total(4);
+    g.set_replies("a kiwifruit reply");
+    let (again, progress) = save(&store, &g.url(), &opts());
+    assert!(
+        again.resumed && !again.partial && !again.single,
+        "{}",
+        again.message
+    );
+    // Page 1 was reused without being fetched again.
+    assert_eq!(g.hits("/grow"), 1);
+    assert_eq!(g.hits("/grow?page=2"), 2);
+    assert_eq!((g.hits("/grow?page=3"), g.hits("/grow?page=4")), (1, 1));
+    assert_eq!(progress, vec![2, 3, 4]);
+    assert_eq!(again.reused, 1);
+    assert_eq!(again.refreshed_page_ids, vec![p2.id]);
+    assert_eq!(again.new_page_ids.len(), 2);
+    assert!(
+        again.message.contains("2 new pages added"),
+        "{}",
+        again.message
+    );
+
+    // One continuous thread, in order, with no duplicates.
+    let t2 = again.thread.unwrap();
+    assert_eq!(t2.id, t1.id);
+    let urls: Vec<_> = t2.pages.iter().map(|p| p.url.clone()).collect();
+    assert_eq!(
+        urls,
+        [
+            g.url(),
+            format!("{}?page=2", g.url()),
+            format!("{}?page=3", g.url()),
+            format!("{}?page=4", g.url()),
+        ]
+    );
+    assert_eq!(t2.pages[0], store.page(p1.id).unwrap().unwrap());
+    assert_eq!(t2.pages[1].id, p2.id);
+    for (i, p) in t2.pages.iter().enumerate() {
+        assert_eq!(p.thread_page, Some(i as i64 + 1));
+        assert_eq!(p.thread_page_count, Some(4));
+    }
+    assert_eq!(store.stats().unwrap().pages, 4);
+    assert_eq!(store.list_pages(None, None, 50, 0).unwrap().len(), 1);
+
+    // The refreshed page has the new reply, in its copy and in search.
+    let hits = store.list_pages(Some("kiwifruit"), None, 10, 0).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, p2.id);
+    let copy = std::fs::read_to_string(store.file_path(&t2.pages[1]).unwrap()).unwrap();
+    assert!(copy.contains("kiwifruit"));
+    assert!(store
+        .list_pages(Some("first"), None, 10, 0)
+        .unwrap()
+        .is_empty());
+
+    // Nothing new: only the last page is checked, and it is left alone.
+    let (third, _) = save(&store, &g.url(), &opts());
+    assert!(third.resumed && third.new_page_ids.is_empty() && third.refreshed_page_ids.is_empty());
+    assert_eq!(third.reused, 4);
+    assert!(third.message.contains("none found"), "{}", third.message);
+    assert_eq!((g.hits("/grow?page=2"), g.hits("/grow?page=4")), (2, 2));
+    assert_eq!(store.stats().unwrap().pages, 4);
+}
+
+#[test]
+fn resave_from_a_later_page_continues_the_same_thread() {
+    let g = growing(3);
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let t1 = save(&store, &g.url(), &opts()).0.thread.unwrap();
+    g.set_total(4);
+    let (r, _) = save(&store, &format!("{}?page=2", g.url()), &opts());
+    let t2 = r.thread.unwrap();
+    assert_eq!(t2.id, t1.id);
+    assert_eq!(t2.pages.len(), 4);
+    assert_eq!(g.hits("/grow"), 1);
+    assert_eq!(g.hits("/grow?page=2"), 1);
+}
+
+#[test]
+fn resave_failure_while_appending_is_partial_and_keeps_pages() {
+    let g = growing(2);
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let t1 = save(&store, &g.url(), &opts()).0.thread.unwrap();
+
+    g.set_total(4);
+    g.set_fail(4);
+    let (r, _) = save(&store, &g.url(), &opts());
+    assert!(r.partial && r.resumed);
+    assert!(r.message.contains("page 4"), "{}", r.message);
+    let t = r.thread.unwrap();
+    assert_eq!(
+        (t.id, t.status.as_str(), t.pages.len()),
+        (t1.id, "partial", 3)
+    );
+    assert!(t.note.unwrap().contains("HTTP 500"));
+
+    // Once the site recovers, the next re-save finishes the thread.
+    g.set_fail(0);
+    let (r, _) = save(&store, &g.url(), &opts());
+    let t = r.thread.unwrap();
+    assert_eq!(
+        (t.id, t.status.as_str(), t.pages.len()),
+        (t1.id, "complete", 4)
+    );
+    assert_eq!(store.stats().unwrap().pages, 4);
+}
+
+#[test]
+fn resave_respects_the_page_cap() {
+    let g = growing(2);
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    save(&store, &g.url(), &opts());
+    g.set_total(6);
+    let o = ThreadOptions {
+        max_pages: 3,
+        ..opts()
+    };
+    let (r, _) = save(&store, &g.url(), &o);
+    assert!(r.partial);
+    assert!(r.message.contains("3-page limit"), "{}", r.message);
+    let t = r.thread.unwrap();
+    assert_eq!((t.status.as_str(), t.pages.len()), ("partial", 3));
+    assert_eq!(g.hits("/grow?page=4"), 0);
+}
+
+#[test]
+fn resave_when_the_last_page_cannot_be_fetched_changes_nothing() {
+    let g = growing(2);
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let t1 = save(&store, &g.url(), &opts()).0.thread.unwrap();
+    g.set_fail(2);
+    let err = save_thread(&store, &g.url(), &opts(), &mut |_| {})
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("unchanged"), "{err}");
+    let t = store.thread(t1.id).unwrap().unwrap();
+    assert_eq!(t, t1);
+}

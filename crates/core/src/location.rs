@@ -16,8 +16,14 @@
 //! in the old folder. If a later launch lands on a folder that has that marker
 //! and no archive (the pointer file was lost, or an old timer still points
 //! there), it follows the marker instead of silently starting a second, empty
-//! archive. A chosen folder that is missing (an unplugged drive) is an error,
-//! never a reason to create a new empty archive.
+//! archive. A chosen folder that is missing (an unplugged drive) is reported
+//! as [`Unavailable`], never a reason to create a new empty archive; the app
+//! then shows a recovery screen (retry, choose another folder, or the default
+//! folder).
+//!
+//! A folder the user picks that already has other files in it is not used
+//! directly: a `Persistwise` subfolder inside it is offered instead
+//! ([`FolderKind::NotEmpty`]).
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -31,6 +37,10 @@ pub const ENV_VAR: &str = "PERSISTWISE_DATA_DIR";
 pub const DB_FILE: &str = "persistwise.sqlite3";
 pub const MOVED_MARKER: &str = "persistwise-moved.json";
 pub const POINTER_FILE: &str = "archive-location.json";
+/// Name of the subfolder offered inside a folder that has other files.
+pub const SUBFOLDER: &str = "Persistwise";
+/// Files that hold the user's settings and keys (not the library).
+pub const SETTINGS_FILES: [&str; 2] = ["settings.json", "secrets.json"];
 const WRITE_TEST: &str = ".persistwise-write-test";
 
 fn project_dirs() -> Result<directories::ProjectDirs> {
@@ -66,6 +76,35 @@ pub struct Resolved {
     /// Set when a moved-to marker was followed from this folder.
     pub followed_from: Option<PathBuf>,
 }
+
+/// The archive folder the app should open is missing (an unplugged drive, a
+/// deleted folder). Returned (inside the `anyhow::Error`) by
+/// [`Locator::resolve`]; find it with `err.downcast_ref::<Unavailable>()`.
+#[derive(Debug, Clone, Serialize)]
+pub struct Unavailable {
+    /// The folder that should hold the archive.
+    pub path: PathBuf,
+    pub source: Source,
+    /// Set when a moved-to marker led to `path` from this folder.
+    pub followed_from: Option<PathBuf>,
+    /// The pointer file that names the folder (delete it to go back to the
+    /// default folder).
+    pub pointer: PathBuf,
+}
+
+impl std::fmt::Display for Unavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "your Persistwise archive folder {} is not available (is its drive connected?). \
+             Reconnect it and start Persistwise again, or delete {} to go back to the default folder",
+            self.path.display(),
+            self.pointer.display()
+        )
+    }
+}
+
+impl std::error::Error for Unavailable {}
 
 #[derive(Debug, Clone)]
 pub struct Locator {
@@ -165,12 +204,13 @@ impl Locator {
         let path = follow_markers(&start)?;
         let followed = path != start;
         if (source == Source::Chosen || followed) && !path.join(DB_FILE).is_file() {
-            bail!(
-                "your Persistwise archive folder {} is not available (is its drive connected?). \
-                 Reconnect it and start Persistwise again, or delete {} to go back to the default folder",
-                path.display(),
-                self.pointer.display()
-            );
+            return Err(Unavailable {
+                path,
+                source,
+                followed_from: followed.then_some(start),
+                pointer: self.pointer.clone(),
+            }
+            .into());
         }
         Ok(Resolved {
             path,
@@ -257,10 +297,58 @@ pub enum FolderKind {
     /// Empty (or new): the current archive can be moved or copied there, or
     /// a fresh one started.
     Empty,
+    /// Has other files and no archive: not used directly. A `Persistwise`
+    /// subfolder inside it is offered instead (see [`check_folder`]).
+    #[serde(rename = "notempty")]
+    NotEmpty,
+}
+
+/// What [`check_folder`] found, for the folder-choice screens.
+#[derive(Debug, Clone, Serialize)]
+pub struct FolderCheck {
+    pub path: PathBuf,
+    pub kind: FolderKind,
+    /// For [`FolderKind::NotEmpty`]: the `Persistwise` subfolder to use
+    /// instead, and what that holds (never `NotEmpty`).
+    pub subfolder: Option<PathBuf>,
+    pub subfolder_kind: Option<FolderKind>,
+}
+
+/// Checks `dest` as a new archive folder (see [`check_destination`]) and,
+/// when it has other files in it, checks the `Persistwise` subfolder that
+/// would be used instead. Nothing is created.
+pub fn check_folder(current: &Path, dest: &Path) -> Result<FolderCheck> {
+    let kind = check_destination(current, dest)?;
+    let path = lenient_canonical(dest);
+    if kind != FolderKind::NotEmpty {
+        return Ok(FolderCheck {
+            path,
+            kind,
+            subfolder: None,
+            subfolder_kind: None,
+        });
+    }
+    let sub = path.join(SUBFOLDER);
+    let sub_kind = check_destination(current, &sub)?;
+    if sub_kind == FolderKind::NotEmpty {
+        bail!(
+            "{} already has other files in it, and so does its {SUBFOLDER} folder. Choose an empty folder or one that holds a Persistwise archive",
+            path.display()
+        );
+    }
+    Ok(FolderCheck {
+        path,
+        kind,
+        subfolder: Some(sub),
+        subfolder_kind: Some(sub_kind),
+    })
 }
 
 /// Checks that `dest` is a safe new archive folder when the archive is
-/// currently in `current`, and says what is there. Creates `dest` if needed.
+/// currently in `current` (or, when that folder is missing, should be), and
+/// says what is there. Refuses the current folder, a folder inside it or
+/// containing it, a file, a relative path and an unwritable place. Nothing is
+/// left behind: a folder created to test writing is removed again.
 pub fn check_destination(current: &Path, dest: &Path) -> Result<FolderKind> {
     if !dest.is_absolute() {
         bail!("choose a full folder path");
@@ -287,26 +375,40 @@ pub fn check_destination(current: &Path, dest: &Path) -> Result<FolderKind> {
     }
     let kind = if d.join(DB_FILE).is_file() {
         FolderKind::Existing
+    } else if d.is_dir()
+        && std::fs::read_dir(&d)
+            .with_context(|| format!("cannot read {}", d.display()))?
+            .filter_map(|e| e.ok())
+            .any(|e| e.file_name() != MOVED_MARKER)
+    {
+        FolderKind::NotEmpty
     } else {
-        if d.is_dir() {
-            let others = std::fs::read_dir(&d)
-                .with_context(|| format!("cannot read {}", d.display()))?
-                .filter_map(|e| e.ok())
-                .any(|e| e.file_name() != MOVED_MARKER);
-            if others {
-                bail!(
-                    "{} already has other files in it. Choose an empty folder (you can create a new one in the folder picker) or a folder that already holds a Persistwise archive",
-                    d.display()
-                );
-            }
-        }
         FolderKind::Empty
     };
+    // Can we write there? Folders created only for this check are removed
+    // again, so looking at a folder never leaves anything behind.
+    let first_missing = d
+        .ancestors()
+        .take_while(|a| !a.exists())
+        .last()
+        .map(Path::to_path_buf);
     std::fs::create_dir_all(&d).with_context(|| format!("cannot create {}", d.display()))?;
     let probe = d.join(WRITE_TEST);
-    std::fs::write(&probe, b"ok")
-        .and_then(|_| std::fs::remove_file(&probe))
-        .map_err(|e| anyhow!("Persistwise cannot write to {}: {e}", d.display()))?;
+    let wrote = std::fs::write(&probe, b"ok").and_then(|_| std::fs::remove_file(&probe));
+    if let Some(top) = first_missing {
+        let mut cur = d.clone();
+        loop {
+            let _ = std::fs::remove_dir(&cur);
+            if cur == top {
+                break;
+            }
+            match cur.parent() {
+                Some(p) => cur = p.to_path_buf(),
+                None => break,
+            }
+        }
+    }
+    wrote.map_err(|e| anyhow!("Persistwise cannot write to {}: {e}", d.display()))?;
     Ok(kind)
 }
 
@@ -320,8 +422,13 @@ pub enum Transfer {
     Move,
     /// Copy the archive; both copies stay usable.
     Copy,
-    /// Start an empty archive in the new folder; the current one stays put.
+    /// Start an empty archive in the new folder with default settings; the
+    /// current one stays put.
     Fresh,
+    /// Start an empty library in the new folder but keep the current
+    /// settings and keys ([`SETTINGS_FILES`]); the current archive stays put.
+    #[serde(rename = "fresh_keep_settings")]
+    FreshKeepSettings,
 }
 
 /// Result of [`prepare`]: the new folder is ready to be opened.
@@ -340,6 +447,10 @@ pub fn prepare(store: &Store, dest: &Path, how: Transfer) -> Result<Prepared> {
     let kind = check_destination(store.root(), dest)?;
     let dest = lenient_canonical(dest);
     let mut copied = Vec::new();
+    if kind == FolderKind::NotEmpty {
+        bail!(not_empty_message(&dest));
+    }
+    std::fs::create_dir_all(&dest).with_context(|| format!("cannot create {}", dest.display()))?;
     match (kind, how) {
         (FolderKind::Existing, Transfer::Open) => {
             // Check it opens (and is not from a newer version) before switching.
@@ -357,6 +468,14 @@ pub fn prepare(store: &Store, dest: &Path, how: Transfer) -> Result<Prepared> {
             let _ = std::fs::remove_file(dest.join(MOVED_MARKER));
             Store::open(&dest)?;
         }
+        (FolderKind::Empty, Transfer::FreshKeepSettings) => {
+            let _ = std::fs::remove_file(dest.join(MOVED_MARKER));
+            if let Err(e) = copy_settings(store.root(), &dest).and_then(|_| Store::open(&dest)) {
+                empty_folder(&dest);
+                return Err(e);
+            }
+        }
+        (FolderKind::NotEmpty, _) => unreachable!("refused above"),
         (FolderKind::Empty, Transfer::Move | Transfer::Copy) => match copy_archive(store, &dest) {
             Ok(c) => copied = c,
             Err(e) => {
@@ -366,6 +485,60 @@ pub fn prepare(store: &Store, dest: &Path, how: Transfer) -> Result<Prepared> {
         },
     }
     Ok(Prepared { dest, how, copied })
+}
+
+fn not_empty_message(dest: &Path) -> String {
+    format!(
+        "{} already has other files in it. Use the {SUBFOLDER} folder inside it, choose an empty folder, or choose a folder that already holds a Persistwise archive",
+        dest.display()
+    )
+}
+
+/// Like [`prepare`], when no archive is open because its folder (`missing`)
+/// is not available. Only [`Transfer::Open`] (an existing archive) and
+/// [`Transfer::Fresh`] (an explicit new, empty archive) are possible:
+/// there is nothing to move or copy, and no settings to keep.
+pub fn prepare_without_archive(missing: &Path, dest: &Path, how: Transfer) -> Result<Prepared> {
+    let kind = check_destination(missing, dest)?;
+    let dest = lenient_canonical(dest);
+    match (kind, how) {
+        (FolderKind::NotEmpty, _) => bail!(not_empty_message(&dest)),
+        (FolderKind::Existing, Transfer::Open) => {
+            Store::open(&dest)?;
+        }
+        (FolderKind::Existing, _) => bail!(
+            "{} already holds a Persistwise archive; it can only be opened as it is",
+            dest.display()
+        ),
+        (FolderKind::Empty, Transfer::Fresh) => {
+            std::fs::create_dir_all(&dest)
+                .with_context(|| format!("cannot create {}", dest.display()))?;
+            let _ = std::fs::remove_file(dest.join(MOVED_MARKER));
+            Store::open(&dest)?;
+        }
+        (FolderKind::Empty, _) => bail!(
+            "{} has no archive yet, and your archive's folder is not available to move or copy from; reconnect it, or start a new, empty archive here",
+            dest.display()
+        ),
+    }
+    Ok(Prepared {
+        dest,
+        how,
+        copied: Vec::new(),
+    })
+}
+
+/// Copies the settings and keys (not the library) into a new archive folder.
+fn copy_settings(from: &Path, to: &Path) -> Result<()> {
+    for name in SETTINGS_FILES {
+        let src = from.join(name);
+        if src.is_file() {
+            // Keeps permissions, so secrets.json stays owner-only.
+            std::fs::copy(&src, to.join(name))
+                .with_context(|| format!("copying {}", src.display()))?;
+        }
+    }
+    Ok(())
 }
 
 fn skip_on_copy(name: &str) -> bool {

@@ -18,6 +18,8 @@ const state = {
   // The thread the reader is showing, when the current page is part of one.
   thread: null,
   platform: "linux",
+  // The archive folder is missing; only the recovery screen is shown.
+  recovering: false,
   settings: null,
 };
 
@@ -540,16 +542,33 @@ function fillLocation(loc) {
     : `This is a folder you chose. The default is ${loc.default_path}.`;
 }
 
+// The folder choices show in Settings, or on the recovery screen while the
+// archive folder is missing.
+function folderUi() {
+  return state.recovering
+    ? { box: $("#recovery-choice"), hint: $("#recovery-hint") }
+    : { box: $("#folder-choice"), hint: $("#folder-hint") };
+}
+
 function folderChoice(...children) {
-  const box = $("#folder-choice");
+  const { box } = folderUi();
   box.hidden = children.length === 0;
   box.replaceChildren(...children);
 }
 
+function folderHint(text) {
+  folderUi().hint.textContent = text;
+}
+
 async function afterFolderChange(res) {
+  if (state.recovering) {
+    // Nothing was loaded yet: start the app on the archive now open.
+    location.reload();
+    return;
+  }
   folderChoice();
   fillLocation(res.location);
-  $("#folder-hint").textContent = `Now using ${res.location.path}.` + (res.warning ? ` Note: ${res.warning}` : "");
+  folderHint(`Now using ${res.location.path}.` + (res.warning ? ` Note: ${res.warning}` : ""));
   state.current = null;
   state.thread = null;
   state.feedId = null;
@@ -565,58 +584,137 @@ async function afterFolderChange(res) {
 
 async function changeFolder(path, how, btns) {
   for (const b of btns) b.disabled = true;
-  $("#folder-hint").textContent = how === "move" ? "Moving your archive… (large archives take a while)"
-    : how === "copy" ? "Copying your archive… (large archives take a while)" : "Switching…";
+  folderHint(how === "move" ? "Moving your archive… (large archives take a while)"
+    : how === "copy" ? "Copying your archive… (large archives take a while)" : "Switching…");
   try {
     await afterFolderChange(await invoke("change_archive_folder", { path, how }));
   } catch (e) {
-    $("#folder-hint").textContent = `Could not change the folder: ${e}`;
+    folderHint(`Could not change the folder: ${e}`);
     for (const b of btns) b.disabled = false;
   }
 }
 
+function cancelButton(label = "Cancel") {
+  return h("button", { class: "ghost", onclick: () => folderChoice() }, label);
+}
+
+// Start fresh: ask whether to keep the current settings and keys.
+function askFresh(check, where) {
+  const keep = h("button", { class: "primary" }, "Keep my settings and API keys");
+  const fresh = h("button", {}, "Start with fresh settings");
+  const back = h("button", { class: "ghost", onclick: () => offerFolder(check) }, "Back");
+  const all = [keep, fresh, back];
+  keep.addEventListener("click", () => changeFolder(check.path, "fresh_keep_settings", all));
+  fresh.addEventListener("click", () => changeFolder(check.path, "fresh", all));
+  folderChoice(
+    h("p", {}, h("strong", {}, `Start a fresh, empty archive in ${where}?`)),
+    h("p", { class: "hint" }, "Your current archive stays where it is, untouched. The new one starts with no pages and no feeds. "
+      + "Keep my settings and API keys copies your Wayback, feed-checking and IPFS settings and your saved keys into it; "
+      + "fresh settings starts it with the defaults and no keys."),
+    h("div", { class: "row" }, keep, fresh, back));
+}
+
+// "the default folder (…)" at the start of a sentence.
+const capital = (t) => t.charAt(0).toUpperCase() + t.slice(1);
+
 function offerFolder(check) {
   const where = check.is_default ? `the default folder (${check.path})` : check.path;
+  if (check.kind === "notempty") {
+    const sub = { ...check, path: check.subfolder, kind: check.subfolder_kind, is_default: false, subfolder: null };
+    const use = h("button", { class: "primary", onclick: () => offerFolder(sub) },
+      check.subfolder_kind === "existing" ? "Use the Persistwise folder inside it" : "Create a Persistwise folder inside it");
+    folderChoice(
+      h("p", {}, h("strong", {}, `${capital(where)} already has other files in it.`)),
+      h("p", { class: "hint" }, check.subfolder_kind === "existing"
+        ? `It has a Persistwise folder that already holds an archive (${check.subfolder}). Persistwise can use that.`
+        : `Persistwise keeps its archive in a folder of its own, so it will not mix with your files. It can create one here: ${check.subfolder}. Nothing is created until you choose what to do next.`),
+      h("div", { class: "row" }, use, cancelButton()));
+    return;
+  }
   if (check.kind === "existing") {
     const open = h("button", { class: "primary" }, "Open that archive");
-    const cancel = h("button", { onclick: () => folderChoice() }, "Cancel");
+    const cancel = cancelButton();
     open.addEventListener("click", () => changeFolder(check.path, "open", [open, cancel]));
     folderChoice(
-      h("p", {}, h("strong", {}, `${where} already holds a Persistwise archive.`)),
-      h("p", { class: "hint" }, "Persistwise will open it as it is. Your current archive stays where it is, untouched; nothing is merged or overwritten."),
+      h("p", {}, h("strong", {}, `${capital(where)} already holds a Persistwise archive.`)),
+      h("p", { class: "hint" }, check.recovering
+        ? "Persistwise will open it as it is. Your missing archive is not changed; you can switch back to it once it is connected again."
+        : "Persistwise will open it as it is. Your current archive stays where it is, untouched; nothing is merged or overwritten."),
       h("div", { class: "row" }, open, cancel));
+    return;
+  }
+  if (check.recovering) {
+    // No archive is open: nothing to move or copy, and no settings to keep.
+    const fresh = h("button", { class: "primary" }, "Start a new, empty archive there");
+    const cancel = cancelButton();
+    fresh.addEventListener("click", () => changeFolder(check.path, "fresh", [fresh, cancel]));
+    folderChoice(
+      h("p", {}, h("strong", {}, `${capital(where)} has no Persistwise archive.`)),
+      h("p", { class: "hint" }, "Persistwise can start a new, empty archive there. Your missing archive is not changed: reconnect it later and choose its folder again to go back to it."),
+      h("div", { class: "row" }, fresh, cancel));
     return;
   }
   const move = h("button", { class: "primary" }, "Move my archive there (recommended)");
   const copy = h("button", {}, "Copy it there");
-  const fresh = h("button", {}, "Start a fresh, empty archive there");
-  const cancel = h("button", { class: "ghost", onclick: () => folderChoice() }, "Cancel");
+  const fresh = h("button", { onclick: () => askFresh(check, where) }, "Start a fresh, empty archive there…");
+  const cancel = cancelButton();
   const all = [move, copy, fresh, cancel];
   move.addEventListener("click", () => changeFolder(check.path, "move", all));
   copy.addEventListener("click", () => changeFolder(check.path, "copy", all));
-  fresh.addEventListener("click", () => changeFolder(check.path, "fresh", all));
   folderChoice(
     h("p", {}, h("strong", {}, `Use ${where} for your archive?`)),
     h("p", { class: "hint" }, "Move: everything (pages, feeds, settings and keys) goes to the new folder and is removed from the old one once the copy is checked, so you keep one archive. "
-      + "Copy: the old folder keeps a full copy too. Start fresh: an empty archive; your current one stays where it is."),
+      + "Copy: the old folder keeps a full copy too. Start fresh: an empty archive (you choose next whether to keep your settings and keys); your current one stays where it is."),
     h("div", { class: "row" }, move, copy, fresh, cancel));
 }
 
-$("#folder-choose").addEventListener("click", async () => {
+async function pickFolder() {
   folderChoice();
   try {
     const check = await invoke("pick_archive_folder");
     if (check) offerFolder(check);
   } catch (e) {
-    $("#folder-hint").textContent = `That folder cannot be used: ${e}`;
+    folderHint(`That folder cannot be used: ${e}`);
   }
-});
+}
 
-$("#folder-default").addEventListener("click", async () => {
+async function useDefaultFolder() {
   folderChoice();
   try { offerFolder(await invoke("check_default_folder")); }
-  catch (e) { $("#folder-hint").textContent = `The default folder cannot be used: ${e}`; }
+  catch (e) { folderHint(`The default folder cannot be used: ${e}`); }
+}
+
+$("#folder-choose").addEventListener("click", pickFolder);
+$("#folder-default").addEventListener("click", useDefaultFolder);
+
+// ---------- recovery: the archive folder is missing at launch ----------
+
+function showRecovery(loc) {
+  state.recovering = true;
+  document.body.classList.add("recovering");
+  $("#recovery").hidden = false;
+  $("#recovery-path").textContent = loc.path;
+  $("#recovery-moved").hidden = !loc.unavailable.moved_from;
+  $("#recovery-moved").textContent = loc.unavailable.moved_from
+    ? `Your archive was moved there from ${loc.unavailable.moved_from}.` : "";
+  $("#recovery-default").title = loc.default_path;
+  $("#recovery-default").hidden = loc.is_default;
+}
+
+$("#recovery-retry").addEventListener("click", async (e) => {
+  folderChoice();
+  e.target.disabled = true;
+  folderHint("Looking for the folder…");
+  try {
+    await invoke("retry_archive_folder");
+    location.reload();
+  } catch (err) {
+    folderHint(String(err));
+    e.target.disabled = false;
+  }
 });
+$("#recovery-choose").addEventListener("click", pickFolder);
+$("#recovery-default").addEventListener("click", useDefaultFolder);
 
 function fillBackground(bg) {
   const box = $("#bg-enabled");
@@ -712,6 +810,12 @@ listen("page-updated", (e) => refreshCurrent(e.payload.id));
 
 (async function start() {
   try {
+    const loc = await invoke("archive_location");
+    if (loc.unavailable) {
+      showRecovery(loc);
+      if (await applyTheme()) setInterval(applyTheme, 4000);
+      return;
+    }
     const info = await refreshSidebar();
     const view = await invoke("get_settings");
     state.settings = view.settings;

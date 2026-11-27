@@ -118,12 +118,20 @@ saves just the one page.
   marked partial, with the reason.
 * **Not a thread?** If no next page is found, the one page is saved as a
   normal page and Persistwise says it did not look like a multi-page thread.
-* **Saving again** reuses pages that are already in your archive instead of
-  storing them twice (so the newest posts on a page already saved are not
-  picked up again; delete that page first to get a fresh copy).
-* **Wayback and IPFS** work as for a single page, for every page of the
-  thread: Wayback when "Also send to the Wayback Machine" is ticked, IPFS when
-  pin-on-save is on. They run one page at a time after the save.
+* **Saving again** (from the first page's address or any other page of the
+  thread) continues the same item instead of starting a new one. The earlier
+  pages are reused as they are, without being downloaded again. The **last
+  saved page is downloaded again** and its copy replaced if it changed, so
+  new replies on it are kept, and any pages that have appeared after it are
+  added to the end, in order, under the same limits. No page is stored twice.
+  If the last page cannot be reached, nothing changes and Persistwise says
+  so; if a new page fails or the 100-page limit is reached, the pages added
+  so far are kept and the item is marked partial.
+* **Wayback and IPFS** work as for a single page, for every page saved or
+  updated by that save: Wayback when "Also send to the Wayback Machine" is
+  ticked (pages already captured are not sent again), IPFS when pin-on-save is
+  on (an updated last page is pinned again, because its content changed).
+  They run one page at a time after the save.
 
 ## Where your archive lives
 
@@ -145,10 +153,18 @@ To keep it somewhere else (another disk, a synced folder), open
   is checked, and a small `persistwise-moved.json` note is left behind so a
   later start finds the new folder), **Copy** it there (both stay usable;
   Persistwise uses the new one), or **Start fresh** (an empty archive; the
-  old folder, including your settings and keys, is left alone).
-* A folder with other files in it, a folder inside the current archive, or a
-  folder Persistwise cannot write to is refused. Create a new empty folder in
-  the folder picker instead.
+  old folder, including your settings and keys, is left alone). Start fresh
+  then asks whether to **keep your settings and API keys** (your Wayback,
+  feed-checking and IPFS settings and saved keys are copied into the new
+  archive; pages, feeds and the library are not) or **start with fresh
+  settings** (defaults, no keys).
+* A folder that **already has other files in it** (your Documents folder, say)
+  is not used directly: Persistwise offers to create a `Persistwise` folder
+  inside it and use that, with the same choices as above (or, if that
+  `Persistwise` folder already holds an archive, to open it). Nothing is
+  created until you choose.
+* The current archive folder, a folder inside it or containing it, a file,
+  and a folder Persistwise cannot write to are refused, with the reason.
 
 **Use the default folder** in the same place goes back. The app switches over
 straight away; if "Keep checking feeds when Persistwise is closed" is on, its
@@ -159,9 +175,17 @@ remembered in a small file outside it: `~/.config/persistwise/archive-location.j
 on Linux (respects `XDG_CONFIG_HOME`; Flatpak:
 `~/.var/app/com.ninepointlabs.Persistwise/config/persistwise/`), and
 `%APPDATA%\Nine Point Labs\Persistwise\config\archive-location.json` on
-Windows. Delete that file to go back to the default folder. If the chosen
-folder is missing when Persistwise starts (an unplugged drive), Persistwise
-says so and exits instead of starting a second, empty archive.
+Windows. Delete that file to go back to the default folder.
+
+**If the chosen folder is missing when Persistwise starts** (an unplugged
+drive, an unmounted share), the window opens on a screen that says so, with
+three choices: **Retry** (after reconnecting the drive), **Choose a different
+folder…** (same rules as in Settings), or **Use the default folder** (opens
+the archive there, or starts a new, empty one only if you confirm). Nothing is
+created anywhere until you choose, and the missing archive is never changed.
+Without a window (`--poll` from the background timer, `--import`,
+`--self-test`) Persistwise prints the problem and exits instead. When
+`PERSISTWISE_DATA_DIR` is set, it is used as before, with no recovery screen.
 
 The folder is decided in this order, for the window and for `--poll`,
 `--import`, `--self-test` and `--smoke-test` alike:
@@ -176,8 +200,8 @@ is shared with it through the desktop's file-chooser portal (the document
 portal), which remembers the grant across restarts; Persistwise stores the
 portal's path for it (under `/run/user/<uid>/doc/…`). If that grant is ever
 removed (for example with `flatpak permission-reset com.ninepointlabs.Persistwise`),
-Persistwise reports the folder as unavailable at start; delete the
-`archive-location.json` above, start it, and choose the folder again.
+Persistwise shows the folder as unavailable at start; use **Choose a
+different folder…** there and pick the same folder again to renew the grant.
 
 ## IPFS (optional)
 

@@ -726,6 +726,50 @@ impl Store {
         Ok(())
     }
 
+    /// Replaces a page's saved copy with a fresh capture of the same address
+    /// (the last page of a re-saved thread, to pick up new replies). The
+    /// title, text and save time follow the new copy. The IPFS fields are
+    /// cleared because an earlier CID no longer matches the copy; Wayback
+    /// history is kept.
+    #[allow(clippy::too_many_arguments)]
+    pub fn refresh_page(
+        &self,
+        id: i64,
+        file: (String, i64, String),
+        content_type: &str,
+        final_url: Option<&str>,
+        title: Option<&str>,
+        body_text: &str,
+        assets: (i64, i64),
+    ) -> Result<()> {
+        let old = self
+            .page(id)?
+            .ok_or_else(|| anyhow!("page {id} not found"))?;
+        let conn = self.conn();
+        conn.execute(
+            "UPDATE pages SET local_path = ?2, size_bytes = ?3, sha256 = ?4, content_type = ?5, \
+             final_url = ?6, title = COALESCE(?7, title), assets_inlined = ?8, assets_failed = ?9, \
+             capture_error = NULL, saved_at = ?10, \
+             ipfs_status = 'off', cid = NULL, pin_service = NULL, ipfs_error = NULL, ipfs_at = NULL \
+             WHERE id = ?1",
+            params![id, file.0, file.1, file.2, content_type, final_url, title, assets.0, assets.1, util::now()],
+        )?;
+        let (t, url): (Option<String>, String) =
+            conn.query_row("SELECT title, url FROM pages WHERE id = ?1", [id], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })?;
+        index_page(&conn, id, t.as_deref(), &url, body_text)?;
+        drop(conn);
+        // Same uid, so usually the same file; remove the old one if the
+        // extension changed.
+        if old.local_path.as_deref() != Some(file.0.as_str()) {
+            if let Some(path) = self.file_path(&old) {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+        Ok(())
+    }
+
     /// Imported HTML copies whose images/styles still point at the web.
     pub fn pages_needing_localize(&self, limit: i64) -> Result<Vec<Page>> {
         let conn = self.conn();

@@ -18,6 +18,12 @@
 //! is found, when a page leads back to one already seen, or at
 //! [`ThreadOptions::max_pages`] (then the thread is marked partial). A failed
 //! page also ends the walk; the pages saved before it are kept.
+//!
+//! Saving a thread that is already archived (from any of its page addresses)
+//! continues it: the earlier pages are reused without fetching them, the
+//! last saved page is fetched again and its copy replaced if it changed (new
+//! replies, a new "next" link), and any pages after it are appended to the
+//! same thread under the same rules.
 
 use anyhow::{bail, Result};
 use lol_html::html_content::{Element, TextChunk};
@@ -71,8 +77,13 @@ pub struct ThreadSave {
     pub pages: Vec<Page>,
     /// Pages captured now (the others were already in the archive).
     pub new_page_ids: Vec<i64>,
-    /// How many pages were already in the archive and reused.
+    /// Pages whose saved copy was replaced by a newer one (on a re-save, the
+    /// thread's last page when it had changed).
+    pub refreshed_page_ids: Vec<i64>,
+    /// How many pages were already in the archive and reused as they were.
     pub reused: usize,
+    /// True when this save continued a thread that was already archived.
+    pub resumed: bool,
     /// True when no further pages were found.
     pub single: bool,
     /// True when the save stopped early (page cap or a failed page).
@@ -81,7 +92,9 @@ pub struct ThreadSave {
     pub message: String,
 }
 
-/// Saves `url` and every following page of its thread.
+/// Saves `url` and every following page of its thread. If `url` is a page
+/// of a thread that is already archived, that thread is continued instead
+/// (see the module docs).
 pub fn save_thread(
     store: &Store,
     url: &str,
@@ -89,25 +102,91 @@ pub fn save_thread(
     on_progress: &mut dyn FnMut(ThreadProgress),
 ) -> Result<ThreadSave> {
     let typed = url.trim().to_string();
-    let start =
+    let typed_url =
         Url::parse(&typed).map_err(|_| anyhow::anyhow!("that does not look like a web address"))?;
-    if !matches!(start.scheme(), "http" | "https") {
+    if !matches!(typed_url.scheme(), "http" | "https") {
         bail!("only http and https pages can be saved");
     }
     let client = http::client(opts.capture.timeout)?;
+    let max = opts.max_pages.max(1);
+
+    // An archived thread that this address belongs to.
+    let existing = match store.page_by_url(&[typed.as_str()])? {
+        Some(p) => match store.thread_of_page(p.id)? {
+            Some((tid, _)) => store.thread(tid)?.filter(|t| !t.pages.is_empty()),
+            None => None,
+        },
+        None => None,
+    };
+
     let mut seen: HashSet<String> = HashSet::new();
     let mut pages: Vec<Page> = Vec::new();
     let mut new_ids = Vec::new();
+    let mut refreshed = Vec::new();
     let mut reused = 0;
-    let mut next: Option<Url> = Some(start.clone());
     // Why the walk stopped early, if it did.
     let mut stopped: Option<String> = None;
+    let resumed = existing.is_some();
+    let thread_id = existing.as_ref().map(|t| t.id);
+
+    let (start, mut next) = match existing {
+        Some(t) => {
+            // Same-site checks stay anchored on where the thread began.
+            let start = Url::parse(&t.url).unwrap_or_else(|_| typed_url.clone());
+            let mut earlier = t.pages;
+            let last = earlier.pop().expect("thread has pages");
+            for p in &earlier {
+                for u in std::iter::once(&p.url).chain(p.final_url.as_ref()) {
+                    if let Ok(u) = Url::parse(u) {
+                        seen.insert(norm(&u));
+                    }
+                }
+            }
+            reused = earlier.len();
+            pages = earlier;
+
+            // Refresh the last saved page: new replies, maybe a new next link.
+            let last_url = Url::parse(&last.url)
+                .map_err(|_| anyhow::anyhow!("the thread's last page has a bad address"))?;
+            seen.insert(norm(&last_url));
+            let n = pages.len() + 1;
+            on_progress(ThreadProgress {
+                page: n,
+                url: last_url.to_string(),
+            });
+            let fetched = capture::fetch_document(last_url.as_str(), &client, &opts.capture)
+                .map_err(|e| {
+                    e.context(format!(
+                        "could not check page {n} ({last_url}) for new replies; the saved thread is unchanged"
+                    ))
+                })?;
+            seen.insert(norm(&fetched.final_url));
+            let following = next_page(&fetched, &start);
+            let page = match refresh_fetched(store, &last, fetched, client.clone(), &opts.capture)
+                .map_err(|e| {
+                e.context(format!(
+                    "could not update page {n} ({last_url}); the saved thread is unchanged"
+                ))
+            })? {
+                Some(p) => {
+                    refreshed.push(p.id);
+                    p
+                }
+                None => {
+                    reused += 1;
+                    last
+                }
+            };
+            pages.push(page);
+            (start, following)
+        }
+        None => (typed_url.clone(), Some(typed_url.clone())),
+    };
 
     while let Some(cur) = next.take() {
-        if pages.len() >= opts.max_pages.max(1) {
+        if pages.len() >= max {
             stopped = Some(format!(
-                "stopped at the {}-page limit; later pages were not saved",
-                opts.max_pages.max(1)
+                "stopped at the {max}-page limit; later pages were not saved"
             ));
             break;
         }
@@ -159,7 +238,7 @@ pub fn save_thread(
         next = following;
     }
 
-    let single = pages.len() == 1 && stopped.is_none();
+    let single = !resumed && pages.len() == 1 && stopped.is_none();
     if single {
         let message = if reused == 1 {
             "No further pages found, so this did not look like a multi-page thread. That page was already in your archive.".to_string()
@@ -170,7 +249,9 @@ pub fn save_thread(
             thread: None,
             pages,
             new_page_ids: new_ids,
+            refreshed_page_ids: refreshed,
             reused,
+            resumed: false,
             single: true,
             partial: false,
             message,
@@ -179,22 +260,31 @@ pub fn save_thread(
 
     let partial = stopped.is_some();
     let status = if partial { "partial" } else { "complete" };
-    // Saving again from a page that is already in a thread continues that
-    // thread instead of starting a second one.
-    let (thread_id, base) = match store.thread_of_page(pages[0].id)? {
-        Some((id, pos)) => {
+    // Position of pages[0] in the thread.
+    let (thread_id, base) = match thread_id {
+        Some(id) => {
             store.update_thread(id, status, stopped.as_deref())?;
-            (id, pos)
+            (id, 0)
         }
         None => {
-            let title = pages[0].title.clone();
-            let id = store.create_thread(
-                start.as_str(),
-                title.as_deref(),
-                status,
-                stopped.as_deref(),
-            )?;
-            (id, 0)
+            // A new save that starts on a page of an existing thread (for
+            // example one reached through a redirect) continues that thread
+            // instead of starting a second one.
+            match store.thread_of_page(pages[0].id)? {
+                Some((id, pos)) => {
+                    store.update_thread(id, status, stopped.as_deref())?;
+                    (id, pos)
+                }
+                None => (
+                    store.create_thread(
+                        start.as_str(),
+                        pages[0].title.as_deref(),
+                        status,
+                        stopped.as_deref(),
+                    )?,
+                    0,
+                ),
+            }
         }
     };
     for (i, p) in pages.iter().enumerate() {
@@ -206,13 +296,30 @@ pub fn save_thread(
         .filter_map(|p| store.page(p.id).ok().flatten())
         .collect();
     let count = pages.len();
-    let mut message = format!(
-        "Saved {count} page{} of the thread",
-        if count == 1 { "" } else { "s" }
-    );
-    if reused > 0 {
-        message.push_str(&format!(" ({reused} already in your archive)"));
-    }
+    let plural = |n: usize| if n == 1 { "" } else { "s" };
+    let mut message = if resumed {
+        let added = new_ids.len();
+        let last_note = if refreshed.is_empty() {
+            "the last saved page had not changed"
+        } else {
+            "the last saved page was updated"
+        };
+        if added == 0 {
+            format!("Checked the thread for new pages: none found, and {last_note}. It has {count} page{}", plural(count))
+        } else {
+            format!(
+                "Updated the thread: {added} new page{} added and {last_note}. It now has {count} page{}",
+                plural(added),
+                plural(count)
+            )
+        }
+    } else {
+        let mut m = format!("Saved {count} page{} of the thread", plural(count));
+        if reused > 0 {
+            m.push_str(&format!(" ({reused} already in your archive)"));
+        }
+        m
+    };
     match &stopped {
         Some(why) => message.push_str(&format!(". This is a partial thread: {why}.")),
         None => message.push('.'),
@@ -221,11 +328,40 @@ pub fn save_thread(
         thread,
         pages,
         new_page_ids: new_ids,
+        refreshed_page_ids: refreshed,
         reused,
+        resumed,
         single: false,
         partial,
         message,
     })
+}
+
+/// Replaces `page`'s copy with `fetched` if the content changed. Returns the
+/// updated page, or None when the new copy is identical.
+fn refresh_fetched(
+    store: &Store,
+    page: &Page,
+    fetched: Fetched,
+    client: reqwest::blocking::Client,
+    opts: &CaptureOptions,
+) -> Result<Option<Page>> {
+    let cap = capture::capture_fetched(fetched, client, opts)?;
+    if page.sha256.as_deref() == Some(util::sha256_hex(&cap.bytes).as_str()) {
+        return Ok(None);
+    }
+    let file = store.write_file(&page.uid, cap.ext, &cap.bytes)?;
+    let final_url = (cap.final_url != page.url).then_some(cap.final_url.as_str());
+    store.refresh_page(
+        page.id,
+        file,
+        &cap.content_type,
+        final_url,
+        cap.title.as_deref(),
+        &cap.text,
+        (cap.assets_inlined as i64, cap.assets_failed as i64),
+    )?;
+    store.page(page.id)
 }
 
 fn save_fetched(

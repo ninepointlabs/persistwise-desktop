@@ -53,7 +53,7 @@ The manual run (workflow_dispatch, tag v0.1.0) added only the missing files; the
 - UI has no npm dependencies and no build step (`ui/`); npm is only used for the pinned Tauri CLI.
 - No telemetry anywhere. The only network traffic is fetching pages the user saves, plus SPN/IPFS when the user turns them on.
 
-Data: by default `~/.local/share/persistwise` (Linux), `%APPDATA%\Nine Point Labs\Persistwise\data` (Windows), `~/.var/app/com.ninepointlabs.Persistwise/data/persistwise` (Flatpak). The user can choose another folder in Settings → Storage (open an existing archive, or move / copy / start fresh); the choice is kept outside the archive in `archive-location.json` in the app's config folder. Order: `PERSISTWISE_DATA_DIR`, then the chosen folder, then the default. One SQLite file plus `pages/<ab>/<uid>.<ext>`.
+Data: by default `~/.local/share/persistwise` (Linux), `%APPDATA%\Nine Point Labs\Persistwise\data` (Windows), `~/.var/app/com.ninepointlabs.Persistwise/data/persistwise` (Flatpak). The user can choose another folder in Settings → Storage (open an existing archive; move / copy / start fresh, keeping or dropping settings and keys; a folder with other files gets a `Persistwise` subfolder). A chosen folder that is missing at launch opens a recovery screen (retry / choose another / default) instead of exiting; the choice is kept outside the archive in `archive-location.json` in the app's config folder. Order: `PERSISTWISE_DATA_DIR`, then the chosen folder, then the default. One SQLite file plus `pages/<ab>/<uid>.<ext>`.
 
 ## How to run and build
 

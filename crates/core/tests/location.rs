@@ -1,8 +1,8 @@
 //! Choosing, resolving and moving the archive folder.
 
 use persistwise_core::location::{
-    self, check_destination, finish_move, prepare, FolderKind, Locator, Source, Transfer, DB_FILE,
-    MOVED_MARKER,
+    self, check_destination, check_folder, finish_move, prepare, prepare_without_archive,
+    FolderKind, Locator, Source, Transfer, Unavailable, DB_FILE, MOVED_MARKER, SUBFOLDER,
 };
 use persistwise_core::settings::{self, Secrets};
 use persistwise_core::store::{NewPage, Store};
@@ -278,6 +278,10 @@ fn unsafe_destinations_are_refused() {
     std::fs::write(busy.join("notes.txt"), "mine").unwrap();
     refuse(&busy, "already has other files");
     assert_eq!(
+        check_destination(&old, &busy).unwrap(),
+        FolderKind::NotEmpty
+    );
+    assert_eq!(
         std::fs::read_to_string(busy.join("notes.txt")).unwrap(),
         "mine"
     );
@@ -331,4 +335,242 @@ fn moving_back_to_the_default_folder_reuses_it() {
     );
     assert!(!default.join(MOVED_MARKER).exists());
     assert_eq!(Store::open(&r.path).unwrap().stats().unwrap().pages, 1);
+}
+
+#[test]
+fn a_missing_folder_is_reported_as_unavailable_with_details() {
+    let e = Env::new();
+    let loc = e.locator(None);
+    let gone = e.p("unplugged/archive");
+    loc.set_chosen(&gone).unwrap();
+    let err = loc.resolve().unwrap_err();
+    let u = err
+        .downcast_ref::<Unavailable>()
+        .expect("an Unavailable error");
+    assert_eq!(u.path, gone);
+    assert_eq!(u.source, Source::Chosen);
+    assert_eq!(u.pointer, loc.pointer);
+    // Nothing was created: not the missing folder, not the default.
+    assert!(!gone.exists());
+    assert!(!e.p("data/persistwise").exists());
+
+    // A moved-to marker that leads to a missing folder is the same case.
+    let old = e.p("data/persistwise");
+    std::fs::create_dir_all(&old).unwrap();
+    let moved = e.p("usb/gone");
+    std::fs::write(
+        old.join(MOVED_MARKER),
+        format!(r#"{{"moved_to": {:?}}}"#, moved.to_str().unwrap()),
+    )
+    .unwrap();
+    loc.clear_chosen().unwrap();
+    let err = loc.resolve().unwrap_err();
+    let u = err.downcast_ref::<Unavailable>().unwrap();
+    assert_eq!(
+        (u.path.clone(), u.followed_from.clone()),
+        (moved.clone(), Some(old.clone()))
+    );
+    assert!(!moved.exists());
+    assert!(!old.join(DB_FILE).exists());
+}
+
+#[test]
+fn recovery_retry_open_elsewhere_or_start_in_the_default_folder() {
+    let e = Env::new();
+    let loc = e.locator(None);
+    let usb = e.p("usb/archive");
+    {
+        let s = Store::open(&usb).unwrap();
+        add_page(&s, "https://usb.test/", "otters on the drive");
+    }
+    loc.set_chosen(&usb).unwrap();
+    // Unplug the drive.
+    let parked = e.p("parked");
+    std::fs::rename(e.p("usb"), &parked).unwrap();
+    assert!(loc
+        .resolve()
+        .unwrap_err()
+        .downcast_ref::<Unavailable>()
+        .is_some());
+
+    // Retry after reconnecting: the same folder resolves again.
+    std::fs::rename(&parked, e.p("usb")).unwrap();
+    let r = loc.resolve().unwrap();
+    assert_eq!(r.path, usb);
+    assert_eq!(Store::open(&r.path).unwrap().stats().unwrap().pages, 1);
+
+    // Unplugged again; choose a different folder that holds an archive.
+    std::fs::rename(e.p("usb"), &parked).unwrap();
+    let other = e.p("Other");
+    {
+        let s = Store::open(&other).unwrap();
+        add_page(&s, "https://other.test/", "herons");
+    }
+    assert_eq!(
+        check_folder(&usb, &other).unwrap().kind,
+        FolderKind::Existing
+    );
+    let p = prepare_without_archive(&usb, &other, Transfer::Open).unwrap();
+    loc.set_chosen(&p.dest).unwrap();
+    assert_eq!(loc.resolve().unwrap().path, other);
+    assert_eq!(Store::open(&other).unwrap().stats().unwrap().pages, 1);
+
+    // An empty folder can only start fresh: nothing to move or copy.
+    let empty = e.p("Empty");
+    assert!(prepare_without_archive(&usb, &empty, Transfer::Move).is_err());
+    assert!(prepare_without_archive(&usb, &empty, Transfer::FreshKeepSettings).is_err());
+    assert!(!empty.exists(), "a refused choice leaves nothing behind");
+
+    // Use the default folder: only when picked, and as a new empty archive.
+    let default = e.p("data/persistwise");
+    assert!(!default.exists());
+    let c = check_folder(&usb, &default).unwrap();
+    assert_eq!(c.kind, FolderKind::Empty);
+    assert!(!default.exists(), "checking does not create it");
+    let p = prepare_without_archive(&usb, &default, Transfer::Fresh).unwrap();
+    loc.set_chosen(&p.dest).unwrap();
+    assert!(!loc.pointer.exists());
+    let r = loc.resolve().unwrap();
+    assert_eq!(
+        (r.path.clone(), r.source),
+        (default.clone(), Source::Default)
+    );
+    assert_eq!(Store::open(&r.path).unwrap().stats().unwrap().pages, 0);
+    // The archive on the unplugged drive is untouched.
+    assert!(parked.join("archive").join(DB_FILE).exists());
+
+    // The same safety rules apply while recovering.
+    assert!(prepare_without_archive(&usb, &usb.join("pages"), Transfer::Fresh).is_err());
+    assert!(prepare_without_archive(&usb, &e.p("usb"), Transfer::Fresh).is_err());
+}
+
+#[test]
+fn a_folder_with_other_files_offers_a_persistwise_subfolder() {
+    let e = Env::new();
+    let old = e.p("data/persistwise");
+    let store = seeded(&old);
+    let docs = e.p("Documents");
+    std::fs::create_dir_all(&docs).unwrap();
+    std::fs::write(docs.join("taxes.txt"), "mine").unwrap();
+
+    let c = check_folder(&old, &docs).unwrap();
+    assert_eq!(c.kind, FolderKind::NotEmpty);
+    let sub = docs.join(SUBFOLDER);
+    assert_eq!(c.subfolder.as_deref(), Some(sub.as_path()));
+    assert_eq!(c.subfolder_kind, Some(FolderKind::Empty));
+    assert!(!sub.exists(), "only offered, not created yet");
+    // The folder itself is never used directly.
+    assert!(prepare(&store, &docs, Transfer::Move).is_err());
+
+    // Accepting the offer: the subfolder gets the usual empty-folder choices.
+    let p = prepare(&store, &sub, Transfer::Move).unwrap();
+    drop(store);
+    finish_move(&old, &p).unwrap();
+    let loc = e.locator(None);
+    loc.set_chosen(&p.dest).unwrap();
+    let r = loc.resolve().unwrap();
+    assert_eq!(r.path, sub);
+    let s = Store::open(&r.path).unwrap();
+    assert_eq!(
+        s.list_pages(Some("kingfishers"), None, 10, 0)
+            .unwrap()
+            .len(),
+        1
+    );
+    // The user's own files are untouched.
+    assert_eq!(
+        std::fs::read_to_string(docs.join("taxes.txt")).unwrap(),
+        "mine"
+    );
+    let mut names: Vec<_> = std::fs::read_dir(&docs)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["Persistwise", "taxes.txt"]);
+}
+
+#[test]
+fn the_subfolder_offer_follows_what_the_subfolder_holds() {
+    let e = Env::new();
+    let old = e.p("data/persistwise");
+    let _store = seeded(&old);
+    let docs = e.p("Documents");
+    std::fs::create_dir_all(docs.join(SUBFOLDER)).unwrap();
+    std::fs::write(docs.join("notes.txt"), "x").unwrap();
+
+    // Subfolder already holds an archive: offered to open as it is.
+    Store::open(docs.join(SUBFOLDER)).unwrap();
+    let c = check_folder(&old, &docs).unwrap();
+    assert_eq!(c.subfolder_kind, Some(FolderKind::Existing));
+
+    // Subfolder has other files too: refused with a clear message.
+    let busy = e.p("Busy");
+    std::fs::create_dir_all(busy.join(SUBFOLDER)).unwrap();
+    std::fs::write(busy.join("a.txt"), "x").unwrap();
+    std::fs::write(busy.join(SUBFOLDER).join("b.txt"), "x").unwrap();
+    let err = check_folder(&old, &busy).unwrap_err().to_string();
+    assert!(err.contains("and so does its Persistwise folder"), "{err}");
+
+    // Unsafe choices are still refused before any offer is made.
+    for (dest, why) in [
+        (old.clone(), "already your archive folder"),
+        (old.join("pages"), "inside your current archive"),
+        (e.p("data"), "contains your current archive"),
+    ] {
+        let err = check_folder(&old, &dest).unwrap_err().to_string();
+        assert!(err.contains(why), "{}: {err}", dest.display());
+    }
+    // A folder whose Persistwise subfolder would be the current archive.
+    let err = check_folder(&e.p("Documents/Persistwise"), &docs);
+    assert!(err.is_err());
+    let f = e.p("a-file");
+    std::fs::write(&f, "x").unwrap();
+    assert!(check_folder(&old, &f)
+        .unwrap_err()
+        .to_string()
+        .contains("not a folder"));
+}
+
+#[test]
+fn start_fresh_can_keep_settings_and_keys() {
+    let e = Env::new();
+    let old = e.p("data/persistwise");
+    let store = seeded(&old);
+    let new = e.p("Fresh");
+    let p = prepare(&store, &new, Transfer::FreshKeepSettings).unwrap();
+    finish_move(&old, &p).unwrap(); // a no-op: nothing moved
+
+    // New folder: the same settings and keys, an empty library.
+    assert!(!settings::load(&new).wayback_on_save);
+    assert_eq!(
+        settings::load_secrets(&new).pinata_jwt.as_deref(),
+        Some("jwt-secret")
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(new.join("secrets.json"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+    let fresh = Store::open(&new).unwrap();
+    let stats = fresh.stats().unwrap();
+    assert_eq!((stats.pages, stats.feeds), (0, 0));
+    assert!(std::fs::read_dir(new.join("pages"))
+        .unwrap()
+        .next()
+        .is_none());
+
+    // Old folder: intact, settings and keys included.
+    assert_eq!(store.stats().unwrap().pages, 1);
+    assert!(!settings::load(&old).wayback_on_save);
+    assert_eq!(
+        settings::load_secrets(&old).pinata_jwt.as_deref(),
+        Some("jwt-secret")
+    );
+    assert!(!old.join(MOVED_MARKER).exists());
 }

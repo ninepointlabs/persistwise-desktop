@@ -16,7 +16,7 @@ use persistwise_core::thread::{ThreadOptions, ThreadSave};
 use persistwise_core::wayback::Wayback;
 use persistwise_core::{import, ipfs, util};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use tauri::http::{header, Response, StatusCode};
@@ -26,10 +26,14 @@ use tauri_plugin_opener::OpenerExt;
 
 /// The open archive. Swapped when the user moves the archive to another
 /// folder, so everything reads it through here rather than keeping a copy.
-pub type SharedStore = Arc<RwLock<Arc<Store>>>;
+/// The open archive. None while the chosen archive folder is missing at
+/// launch (the UI then shows the recovery screen); never an empty stand-in.
+pub type SharedStore = Arc<RwLock<Option<Arc<Store>>>>;
 
 struct AppState {
     shared: SharedStore,
+    /// Why no archive is open, while it is not.
+    unavailable: Arc<std::sync::Mutex<Option<location::Unavailable>>>,
     /// Saves and backups running right now; the archive folder is not
     /// switched while any are.
     busy: Arc<AtomicUsize>,
@@ -38,8 +42,21 @@ struct AppState {
 }
 
 impl AppState {
-    fn store(&self) -> Arc<Store> {
-        current(&self.shared)
+    fn store(&self) -> CmdResult<Arc<Store>> {
+        current(&self.shared).ok_or_else(|| {
+            "Your archive folder is not available. Reconnect it or choose a folder first.".into()
+        })
+    }
+    fn unavailable(&self) -> Option<location::Unavailable> {
+        self.unavailable
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+    /// Starts using `store` (after a switch or a recovery).
+    fn install(&self, store: Arc<Store>) {
+        *self.shared.write().unwrap_or_else(|e| e.into_inner()) = Some(store);
+        *self.unavailable.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
     fn busy(&self) -> Busy {
         Busy::new(&self.busy)
@@ -55,7 +72,7 @@ impl AppState {
     }
 }
 
-pub fn current(shared: &SharedStore) -> Arc<Store> {
+pub fn current(shared: &SharedStore) -> Option<Arc<Store>> {
     shared.read().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
@@ -104,9 +121,9 @@ struct AppInfo {
 fn app_info(state: State<AppState>) -> CmdResult<AppInfo> {
     Ok(AppInfo {
         version: env!("CARGO_PKG_VERSION"),
-        data_dir: state.store().root().display().to_string(),
+        data_dir: state.store()?.root().display().to_string(),
         platform: std::env::consts::OS,
-        stats: state.store().stats().map_err(err)?,
+        stats: state.store()?.stats().map_err(err)?,
         omarchy: theme::omarchy_theme_dir().is_some(),
     })
 }
@@ -120,7 +137,7 @@ fn list_pages(
     offset: Option<i64>,
 ) -> CmdResult<Vec<Page>> {
     state
-        .store()
+        .store()?
         .list_pages(
             query.as_deref().filter(|q| !q.trim().is_empty()),
             feed_id,
@@ -132,12 +149,12 @@ fn list_pages(
 
 #[tauri::command]
 fn get_page(state: State<AppState>, id: i64) -> CmdResult<Option<Page>> {
-    state.store().page(id).map_err(err)
+    state.store()?.page(id).map_err(err)
 }
 
 #[tauri::command]
 fn list_feeds(state: State<AppState>) -> CmdResult<Vec<Feed>> {
-    state.store().feeds().map_err(err)
+    state.store()?.feeds().map_err(err)
 }
 
 #[tauri::command]
@@ -149,7 +166,7 @@ async fn save_page(
 ) -> CmdResult<Page> {
     state.not_switching()?;
     let busy = state.busy();
-    let store = state.store();
+    let store = state.store()?;
     let s2 = store.clone();
     let page = blocking(move || persistwise_core::save_page(&s2, &url, &CaptureOptions::default()))
         .await?;
@@ -182,7 +199,7 @@ async fn save_thread(
 ) -> CmdResult<ThreadSave> {
     state.not_switching()?;
     let busy = state.busy();
-    let store = state.store();
+    let store = state.store()?;
     let s2 = store.clone();
     let app2 = app.clone();
     let saved = blocking(move || {
@@ -192,39 +209,55 @@ async fn save_thread(
     })
     .await?;
     let pin = pin_on_save(&store);
-    let ids: Vec<i64> = saved.pages.iter().map(|p| p.id).collect();
+    // Pages captured or refreshed now, plus reused ones never sent to
+    // Wayback. A re-saved thread does not resend its unchanged pages.
+    let ids: Vec<i64> = saved
+        .pages
+        .iter()
+        .filter(|p| {
+            saved.new_page_ids.contains(&p.id)
+                || saved.refreshed_page_ids.contains(&p.id)
+                || (p.wayback_url.is_none() && p.wayback_status != "pending")
+        })
+        .map(|p| p.id)
+        .collect();
     let to_pin: Vec<i64> = saved
         .pages
         .iter()
         .filter(|p| p.cid.is_none())
         .map(|p| p.id)
         .collect();
-    if wayback || (pin && !to_pin.is_empty()) {
-        for &id in &ids {
-            if wayback {
-                let _ = store.set_wayback(id, "pending", None, None);
-            }
+    let to_wayback: Vec<i64> = if wayback { ids } else { Vec::new() };
+    let to_pin: Vec<i64> = if pin { to_pin } else { Vec::new() };
+    if !to_wayback.is_empty() || !to_pin.is_empty() {
+        for &id in &to_wayback {
+            let _ = store.set_wayback(id, "pending", None, None);
         }
         for &id in &to_pin {
-            if pin {
-                let _ = store.set_ipfs(id, "pending", None, None, None);
-            }
+            let _ = store.set_ipfs(id, "pending", None, None, None);
         }
+        // In thread order, each page once.
+        let order: Vec<i64> = saved
+            .pages
+            .iter()
+            .map(|p| p.id)
+            .filter(|id| to_wayback.contains(id) || to_pin.contains(id))
+            .collect();
         let busy2 = state.busy();
         let store2 = store.clone();
         std::thread::spawn(move || {
             let _busy = busy2;
             // One page at a time: Save Page Now and pinning services
             // rate-limit bursts.
-            for id in ids {
-                if wayback {
+            for id in order {
+                if to_wayback.contains(&id) {
                     if let Ok(p) =
                         persistwise_core::backup_wayback(&store2, id, &Wayback::default())
                     {
                         let _ = app.emit("page-updated", p);
                     }
                 }
-                if pin && to_pin.contains(&id) {
+                if to_pin.contains(&id) {
                     if let Ok(p) = persistwise_core::backup_ipfs(&store2, id) {
                         let _ = app.emit("page-updated", p);
                     }
@@ -238,12 +271,12 @@ async fn save_thread(
 
 #[tauri::command]
 fn get_thread(state: State<AppState>, id: i64) -> CmdResult<Option<Thread>> {
-    state.store().thread(id).map_err(err)
+    state.store()?.thread(id).map_err(err)
 }
 
 #[tauri::command]
 fn delete_thread(state: State<AppState>, id: i64) -> CmdResult<()> {
-    state.store().delete_thread(id).map_err(err)
+    state.store()?.delete_thread(id).map_err(err)
 }
 
 fn spawn_wayback(app: AppHandle, store: Arc<Store>, id: i64, busy: Busy) {
@@ -269,24 +302,28 @@ fn spawn_ipfs(app: AppHandle, store: Arc<Store>, id: i64, busy: Busy) {
 
 #[tauri::command]
 fn send_to_wayback(app: AppHandle, state: State<AppState>, id: i64) -> CmdResult<()> {
-    state.store().page(id).map_err(err)?.ok_or("no such page")?;
-    spawn_wayback(app, state.store(), id, state.busy());
+    state
+        .store()?
+        .page(id)
+        .map_err(err)?
+        .ok_or("no such page")?;
+    spawn_wayback(app, state.store()?, id, state.busy());
     Ok(())
 }
 
 #[tauri::command]
 fn pin_to_ipfs(app: AppHandle, state: State<AppState>, id: i64) -> CmdResult<()> {
-    let s = settings::load(state.store().root());
-    if !ipfs::is_configured(&s.ipfs, &settings::load_secrets(state.store().root())) {
+    let s = settings::load(state.store()?.root());
+    if !ipfs::is_configured(&s.ipfs, &settings::load_secrets(state.store()?.root())) {
         return Err("IPFS is not set up. You can set it up in Settings.".into());
     }
-    spawn_ipfs(app, state.store(), id, state.busy());
+    spawn_ipfs(app, state.store()?, id, state.busy());
     Ok(())
 }
 
 #[tauri::command]
 fn delete_page(state: State<AppState>, id: i64) -> CmdResult<()> {
-    state.store().delete_page(id).map_err(err)
+    state.store()?.delete_page(id).map_err(err)
 }
 
 // ---------- feeds ----------
@@ -299,7 +336,7 @@ async fn add_feed(
 ) -> CmdResult<Feed> {
     state.not_switching()?;
     let _busy = state.busy();
-    let store = state.store();
+    let store = state.store()?;
     let (feed, _created) =
         blocking(move || persistwise_core::feeds::subscribe(&store, &url)).await?;
     poller.check_now(Some(feed.id));
@@ -311,7 +348,7 @@ async fn add_feed(
 async fn localize_page(state: State<'_, AppState>, id: i64) -> CmdResult<Page> {
     state.not_switching()?;
     let _busy = state.busy();
-    let store = state.store();
+    let store = state.store()?;
     blocking(move || persistwise_core::localize_page(&store, id, &CaptureOptions::default())).await
 }
 
@@ -328,31 +365,31 @@ fn polling_now(poller: State<poller::Poller>) -> bool {
 #[tauri::command]
 fn set_feed_paused(state: State<AppState>, id: i64, paused: bool) -> CmdResult<()> {
     state
-        .store()
+        .store()?
         .set_feed_status(id, if paused { "paused" } else { "active" }, None, false)
         .map_err(err)
 }
 
 #[tauri::command]
 fn remove_feed(state: State<AppState>, id: i64) -> CmdResult<()> {
-    state.store().delete_feed(id).map_err(err)
+    state.store()?.delete_feed(id).map_err(err)
 }
 
 #[tauri::command]
-fn background_status(state: State<AppState>) -> background::Status {
-    background::status(state.store().root())
+fn background_status(state: State<AppState>) -> CmdResult<background::Status> {
+    Ok(background::status(state.store()?.root()))
 }
 
 #[tauri::command]
 fn set_background(state: State<AppState>, enabled: bool) -> CmdResult<background::Status> {
     if enabled {
-        let minutes = settings::load(state.store().root()).feeds.poll_minutes;
+        let minutes = settings::load(state.store()?.root()).feeds.poll_minutes;
         background::enable(
-            state.store().root(),
+            state.store()?.root(),
             if minutes == 0 { 15 } else { minutes },
         )
     } else {
-        background::disable(state.store().root())
+        background::disable(state.store()?.root())
     }
 }
 
@@ -377,8 +414,8 @@ fn settings_view(store: &Store) -> SettingsView {
 }
 
 #[tauri::command]
-fn get_settings(state: State<AppState>) -> SettingsView {
-    settings_view(&state.store())
+fn get_settings(state: State<AppState>) -> CmdResult<SettingsView> {
+    Ok(settings_view(state.store()?.as_ref()))
 }
 
 /// For each secret: absent = keep as is, "" = remove, anything else = replace.
@@ -394,7 +431,7 @@ fn save_settings(
     settings: Settings,
     secrets: Option<SecretsUpdate>,
 ) -> CmdResult<SettingsView> {
-    let store = state.store();
+    let store = state.store()?;
     let root = store.root();
     settings::save(root, &settings).map_err(err)?;
     // Keep the background timer's schedule in step with the setting.
@@ -416,12 +453,12 @@ fn save_settings(
         apply(&mut cur.pinata_jwt, up.pinata_jwt);
         settings::save_secrets(root, &cur).map_err(err)?;
     }
-    Ok(settings_view(&state.store()))
+    Ok(settings_view(state.store()?.as_ref()))
 }
 
 #[tauri::command]
 async fn test_ipfs(state: State<'_, AppState>) -> CmdResult<String> {
-    let root = state.store().root().to_path_buf();
+    let root = state.store()?.root().to_path_buf();
     blocking(move || {
         let s = settings::load(&root);
         ipfs::test_connection(
@@ -461,7 +498,7 @@ async fn import_export(
     let path = picked.into_path().map_err(err)?;
     state.not_switching()?;
     let _busy = state.busy();
-    let store = state.store();
+    let store = state.store()?;
     let shown = path.display().to_string();
     let report = blocking(move || import::import(&store, &path)).await?;
     Ok(Some(ImportResult {
@@ -487,7 +524,7 @@ fn open_target(app: &AppHandle, target: &str, is_url: bool) -> CmdResult<()> {
 
 #[tauri::command]
 fn open_data_dir(app: AppHandle, state: State<AppState>) -> CmdResult<()> {
-    open_target(&app, &state.store().root().display().to_string(), false)
+    open_target(&app, &state.store()?.root().display().to_string(), false)
 }
 
 // ---------- archive folder ----------
@@ -500,11 +537,39 @@ struct LocationView {
     is_default: bool,
     /// PERSISTWISE_DATA_DIR is set, so the folder cannot be changed here.
     env_locked: bool,
+    /// Set while the archive folder is missing: the UI shows the recovery
+    /// screen and `path` is the missing folder.
+    unavailable: Option<UnavailableView>,
 }
 
-fn location_view(store: &Store) -> CmdResult<LocationView> {
+#[derive(Serialize)]
+struct UnavailableView {
+    /// Why, in a sentence.
+    message: String,
+    /// The folder the archive was moved away from, if a moved-to note led
+    /// to the missing folder.
+    moved_from: Option<String>,
+}
+
+fn location_view(state: &AppState) -> CmdResult<LocationView> {
     let loc = Locator::from_env().map_err(err)?;
-    let is_default = location::same_dir(store.root(), &loc.default_dir);
+    let (root, unavailable) = match current(&state.shared) {
+        Some(store) => (store.root().to_path_buf(), None),
+        None => {
+            let u = state
+                .unavailable()
+                .ok_or("no archive is open, and no reason was recorded")?;
+            let view = UnavailableView {
+                message: format!(
+                    "Persistwise cannot find your archive folder {}. If it is on a drive that is not connected, reconnect it and press Retry.",
+                    u.path.display()
+                ),
+                moved_from: u.followed_from.as_ref().map(|p| p.display().to_string()),
+            };
+            (u.path, Some(view))
+        }
+    };
+    let is_default = location::same_dir(&root, &loc.default_dir);
     let source = if loc.env_dir.is_some() {
         Source::Env
     } else if is_default {
@@ -513,17 +578,30 @@ fn location_view(store: &Store) -> CmdResult<LocationView> {
         Source::Chosen
     };
     Ok(LocationView {
-        path: store.root().display().to_string(),
+        path: root.display().to_string(),
         default_path: loc.default_dir.display().to_string(),
         source,
         is_default,
         env_locked: loc.env_dir.is_some(),
+        unavailable,
     })
 }
 
 #[tauri::command]
 fn archive_location(state: State<AppState>) -> CmdResult<LocationView> {
-    location_view(&state.store())
+    location_view(&state)
+}
+
+/// The folder new choices are checked against: the open archive, or the
+/// missing one while recovering.
+fn reference_root(state: &AppState) -> CmdResult<PathBuf> {
+    match current(&state.shared) {
+        Some(s) => Ok(s.root().to_path_buf()),
+        None => state
+            .unavailable()
+            .map(|u| u.path)
+            .ok_or_else(|| "no archive is open".to_string()),
+    }
 }
 
 #[derive(Serialize)]
@@ -531,15 +609,25 @@ struct FolderCheck {
     path: String,
     kind: FolderKind,
     is_default: bool,
+    /// For a folder with other files in it: the Persistwise subfolder that is
+    /// offered instead, and what it holds.
+    subfolder: Option<String>,
+    subfolder_kind: Option<FolderKind>,
+    /// No archive is open (recovery): only opening an archive or starting a
+    /// fresh one is possible.
+    recovering: bool,
 }
 
-fn check_folder(store: &Store, path: PathBuf) -> CmdResult<FolderCheck> {
+fn check_folder(reference: &Path, path: PathBuf, recovering: bool) -> CmdResult<FolderCheck> {
     let default = location::default_dir().map_err(err)?;
-    let kind = location::check_destination(store.root(), &path).map_err(|e| format!("{e:#}"))?;
+    let c = location::check_folder(reference, &path).map_err(|e| format!("{e:#}"))?;
     Ok(FolderCheck {
-        is_default: location::same_dir(&path, &default),
-        path: path.display().to_string(),
-        kind,
+        is_default: location::same_dir(&c.path, &default),
+        path: c.path.display().to_string(),
+        kind: c.kind,
+        subfolder: c.subfolder.map(|p| p.display().to_string()),
+        subfolder_kind: c.subfolder_kind,
+        recovering,
     })
 }
 
@@ -571,8 +659,9 @@ async fn pick_archive_folder(
         return Ok(None);
     };
     let path = picked.into_path().map_err(err)?;
-    let store = state.store();
-    blocking(move || check_folder(&store, path).map_err(anyhow::Error::msg))
+    let reference = reference_root(&state)?;
+    let recovering = current(&state.shared).is_none();
+    blocking(move || check_folder(&reference, path, recovering).map_err(anyhow::Error::msg))
         .await
         .map(Some)
 }
@@ -581,7 +670,33 @@ async fn pick_archive_folder(
 #[tauri::command]
 fn check_default_folder(state: State<AppState>) -> CmdResult<FolderCheck> {
     refuse_if_env_locked()?;
-    check_folder(&state.store(), location::default_dir().map_err(err)?)
+    check_folder(
+        &reference_root(&state)?,
+        location::default_dir().map_err(err)?,
+        current(&state.shared).is_none(),
+    )
+}
+
+/// Recovery: tries the archive folder again (after the user reconnected its
+/// drive). On success the app opens it as usual.
+#[tauri::command]
+fn retry_archive_folder(state: State<AppState>) -> CmdResult<LocationView> {
+    if current(&state.shared).is_some() {
+        return location_view(&state);
+    }
+    let resolved = Locator::from_env()
+        .and_then(|l| l.resolve())
+        .map_err(|e| match e.downcast_ref::<location::Unavailable>() {
+            Some(u) => format!(
+                "{} is still not available. Check that its drive is connected, or choose another folder.",
+                u.path.display()
+            ),
+            None => format!("{e:#}"),
+        })?;
+    let store = Arc::new(Store::open(&resolved.path).map_err(|e| format!("{e:#}"))?);
+    state.install(store.clone());
+    background::sync_windows(store.root());
+    location_view(&state)
 }
 
 #[derive(Serialize)]
@@ -592,9 +707,11 @@ struct ChangeResult {
 }
 
 /// Switches the archive to `path`: opens the archive already there, or
-/// moves / copies the current one there, or starts a fresh one. The running
-/// app then uses the new folder, the choice is remembered for next time and
-/// the Linux background timer (if on) is pointed at it.
+/// moves / copies the current one there, or starts a fresh one (with or
+/// without the current settings and keys). The running app then uses the
+/// new folder, the choice is remembered for next time and the Linux
+/// background timer (if on) is pointed at it. While recovering from a
+/// missing folder, only opening an archive or starting a fresh one works.
 #[tauri::command]
 async fn change_archive_folder(
     state: State<'_, AppState>,
@@ -621,17 +738,23 @@ async fn change_archive_folder(
     }
     let _reset = Reset(state.switching.clone());
 
-    let old = state.store();
-    let old_root = old.root().to_path_buf();
     let dest = PathBuf::from(path);
-    let prepared = blocking(move || location::prepare(&old, &dest, how)).await?;
+    let old = current(&state.shared);
+    let old_root = old.as_ref().map(|s| s.root().to_path_buf());
+    let prepared = match old {
+        Some(old) => blocking(move || location::prepare(&old, &dest, how)).await?,
+        None => {
+            let missing = reference_root(&state)?;
+            blocking(move || location::prepare_without_archive(&missing, &dest, how)).await?
+        }
+    };
     let new_store = Arc::new(Store::open(&prepared.dest).map_err(|e| format!("{e:#}"))?);
     loc.set_chosen(&prepared.dest)
         .map_err(|e| format!("could not remember the new folder: {e:#}"))?;
-    *state.shared.write().unwrap_or_else(|e| e.into_inner()) = new_store.clone();
+    state.install(new_store.clone());
 
     let mut warnings = Vec::new();
-    if how == Transfer::Move {
+    if let (Transfer::Move, Some(old_root)) = (how, old_root) {
         let p = prepared.clone();
         let r = blocking(move || location::finish_move(&old_root, &p)).await;
         if let Err(e) = r {
@@ -649,7 +772,7 @@ async fn change_archive_folder(
     }
     background::sync_windows(&new_root);
     Ok(ChangeResult {
-        location: location_view(&new_store)?,
+        location: location_view(&state)?,
         warning: (!warnings.is_empty()).then(|| warnings.join(" ")),
     })
 }
@@ -657,9 +780,13 @@ async fn change_archive_folder(
 /// Opens a page's saved file in the system's default app (for PDFs etc).
 #[tauri::command]
 fn open_saved_file(app: AppHandle, state: State<AppState>, id: i64) -> CmdResult<()> {
-    let page = state.store().page(id).map_err(err)?.ok_or("no such page")?;
+    let page = state
+        .store()?
+        .page(id)
+        .map_err(err)?
+        .ok_or("no such page")?;
     let path = state
-        .store()
+        .store()?
         .file_path(&page)
         .ok_or("the saved copy is missing")?;
     open_target(&app, &path.display().to_string(), false)
@@ -674,8 +801,11 @@ fn open_external(app: AppHandle, url: String) -> CmdResult<()> {
 }
 
 #[tauri::command]
-fn ipfs_link(state: State<AppState>, cid: String) -> String {
-    ipfs::gateway_url(&settings::load(state.store().root()).ipfs, &cid)
+fn ipfs_link(state: State<AppState>, cid: String) -> CmdResult<String> {
+    Ok(ipfs::gateway_url(
+        &settings::load(state.store()?.root()).ipfs,
+        &cid,
+    ))
 }
 
 #[tauri::command]
@@ -759,11 +889,22 @@ fn serve_saved_copy_inner(store: &Store, path: &str) -> Response<Vec<u8>> {
 /// and launchers group the window under the right icon.
 pub const APP_ID: &str = "com.ninepointlabs.Persistwise";
 
-const SMOKE_JS: &str = r#"
+const SMOKE_JS: &str = r##"
 (async () => {
   const out = [];
   try {
     const { invoke } = window.__TAURI__.core;
+    const where = await invoke("archive_location");
+    if (where.unavailable) {
+      // Launched on a missing archive folder: the recovery screen, not an
+      // empty archive.
+      const shown = !document.querySelector("#recovery").hidden && document.querySelector(".layout").offsetParent === null;
+      const blocked = await invoke("app_info").then(() => false, () => true);
+      out.push("recovery screen " + (shown ? "shown" : "MISSING") + " for " + where.path + ", archive commands " + (blocked ? "refused" : "ANSWERED"));
+      if (!shown || !blocked) throw new Error("recovery screen misbehaved");
+      await invoke("smoke_report", { ok: true, details: out.join("; ") });
+      return;
+    }
     const info = await invoke("app_info");
     out.push("ipc ok, pages=" + info.stats.pages);
     const loc = await invoke("archive_location");
@@ -798,7 +939,7 @@ const SMOKE_JS: &str = r#"
     await window.__TAURI__.core.invoke("smoke_report", { ok: false, details: out.join("; ") + " ERROR " + e });
   }
 })();
-"#;
+"##;
 
 #[tauri::command]
 fn smoke_report(app: AppHandle, ok: bool, details: String) {
@@ -870,10 +1011,24 @@ fn main() {
         println!("persistwise-desktop {}", env!("CARGO_PKG_VERSION"));
         return;
     }
+    let args: Vec<String> = std::env::args().collect();
+    // Modes that run without a window (or, for --background, only to check
+    // feeds) cannot show the recovery screen; a missing folder is an error
+    // there, as before.
+    let headless = args.iter().any(|a| {
+        matches!(
+            a.as_str(),
+            "--import" | "--poll" | "--self-test" | "--print-child-env" | "--background"
+        )
+    });
     // PERSISTWISE_DATA_DIR, else the folder chosen in Settings, else the
     // default. Every mode below (--poll, --import, --self-test,
-    // --smoke-test and the window) uses the same answer.
-    let root = match Locator::from_env().and_then(|l| l.resolve()) {
+    // --smoke-test and the window) uses the same answer. When the chosen
+    // folder is missing, the window opens on the recovery screen instead;
+    // nothing is created anywhere until the user picks what to do.
+    let mut unavailable: Option<location::Unavailable> = None;
+    let opened: Option<(PathBuf, Arc<Store>)> = match Locator::from_env().and_then(|l| l.resolve())
+    {
         Ok(r) => {
             if let Some(from) = &r.followed_from {
                 eprintln!(
@@ -882,24 +1037,40 @@ fn main() {
                     r.path.display()
                 );
             }
-            r.path
+            match Store::open(&r.path) {
+                Ok(s) => Some((r.path, Arc::new(s))),
+                Err(e) => {
+                    eprintln!(
+                        "Persistwise: could not open the archive in {}: {e:#}",
+                        r.path.display()
+                    );
+                    std::process::exit(1);
+                }
+            }
         }
-        Err(e) => {
-            eprintln!("Persistwise: {e:#}");
-            std::process::exit(1);
-        }
+        Err(e) => match e.downcast_ref::<location::Unavailable>() {
+            // PERSISTWISE_DATA_DIR keeps its plain behaviour: no fallback.
+            Some(u) if !headless && u.source != Source::Env => {
+                eprintln!("Persistwise: {e:#}. Opening the window to choose what to do.");
+                unavailable = Some(u.clone());
+                None
+            }
+            _ => {
+                eprintln!("Persistwise: {e:#}");
+                std::process::exit(1);
+            }
+        },
     };
-    let store = match Store::open(&root) {
-        Ok(s) => Arc::new(s),
-        Err(e) => {
-            eprintln!(
-                "Persistwise: could not open the archive in {}: {e:#}",
-                root.display()
-            );
-            std::process::exit(1);
-        }
+    // Only the window can run without an archive; the modes below need one.
+    let (root, store) = match &opened {
+        Some((r, s)) => (Some(r.clone()), Some(s.clone())),
+        None => (None, None),
     };
-    let args: Vec<String> = std::env::args().collect();
+    let need = |store: &Option<Arc<Store>>| -> Arc<Store> {
+        store
+            .clone()
+            .expect("headless modes exit above when no archive opens")
+    };
     // `--import <export.zip|folder>`: import or re-sync a Persistwise web
     // export without opening a window (handy for a scheduled sync).
     if let Some(i) = args.iter().position(|a| a == "--import") {
@@ -907,7 +1078,7 @@ fn main() {
             eprintln!("usage: persistwise-desktop --import <export.zip|folder>");
             std::process::exit(2);
         };
-        match import::import(&store, &hostenv::user_path(path)) {
+        match import::import(&need(&store), &hostenv::user_path(path)) {
             Ok(r) => {
                 println!("{}", serde_json::to_string_pretty(&r).unwrap_or_default());
                 std::process::exit(if r.problems.is_empty() { 0 } else { 3 });
@@ -934,6 +1105,7 @@ fn main() {
     // `--poll`: check feeds once, archive new posts, print a JSON report and
     // exit. This is what the background timer runs.
     if args.iter().any(|a| a == "--poll") {
+        let store = need(&store);
         let opts = persistwise_core::feeds::PollOptions::from_settings(&store);
         match persistwise_core::feeds::poll_all(&store, None, &opts, &mut |_| {}) {
             Ok(reports) => {
@@ -962,11 +1134,11 @@ fn main() {
         }
     }
     if args.iter().any(|a| a == "--self-test") {
-        let stats = store.stats().expect("stats");
+        let stats = need(&store).stats().expect("stats");
         println!(
             "persistwise-desktop {} ok: data_dir={} pages={}",
             env!("CARGO_PKG_VERSION"),
-            root.display(),
+            need(&store).root().display(),
             stats.pages
         );
         return;
@@ -976,10 +1148,17 @@ fn main() {
     // `--background` (Windows sign-in start): run hidden in the tray, only
     // when the user has "keep checking feeds when closed" on.
     let background_launch = args.iter().any(|a| a == "--background");
-    if background_launch && !(cfg!(windows) && settings::load(&root).feeds.background) {
+    if background_launch
+        && !(cfg!(windows)
+            && root
+                .as_deref()
+                .is_some_and(|r| settings::load(r).feeds.background))
+    {
         return;
     }
-    background::sync_windows(&root);
+    if let Some(root) = &root {
+        background::sync_windows(root);
+    }
     let shared: SharedStore = Arc::new(RwLock::new(store));
     let switching = Arc::new(AtomicBool::new(false));
     let protocol_store = shared.clone();
@@ -997,11 +1176,18 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .manage(AppState {
             shared,
+            unavailable: Arc::new(std::sync::Mutex::new(unavailable)),
             busy: Arc::new(AtomicUsize::new(0)),
             switching,
         })
         .register_uri_scheme_protocol("pwcopy", move |_ctx, request| {
-            serve_saved_copy(&current(&protocol_store), &request)
+            match current(&protocol_store) {
+                Some(store) => serve_saved_copy(&store, &request),
+                None => Response::builder()
+                    .status(503)
+                    .body(Vec::new())
+                    .unwrap_or_default(),
+            }
         })
         .setup(move |app| {
             let poller = poller::Poller::start(
@@ -1038,8 +1224,9 @@ fn main() {
             // Windows with background checking on: closing hides to the tray.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if cfg!(windows) {
-                    let root = window.state::<AppState>().store().root().to_path_buf();
-                    if settings::load(&root).feeds.background {
+                    let keep = current(&window.state::<AppState>().shared)
+                        .is_some_and(|s| settings::load(s.root()).feeds.background);
+                    if keep {
                         api.prevent_close();
                         let _ = window.hide();
                     }
@@ -1079,6 +1266,7 @@ fn main() {
             archive_location,
             pick_archive_folder,
             check_default_folder,
+            retry_archive_folder,
             change_archive_folder
         ])
         .run(tauri::generate_context!())
