@@ -378,6 +378,11 @@ fn refresh_fetched(
     if page.sha256.as_deref() == Some(util::sha256_hex(&cap.bytes).as_str()) {
         return Ok(None);
     }
+    // Every HTML copy carries the time it was saved; that alone is no change.
+    let old = store.file_path(page).and_then(|p| std::fs::read(p).ok());
+    if old.is_some_and(|old| without_saved_at(&old) == without_saved_at(&cap.bytes)) {
+        return Ok(None);
+    }
     let file = store.write_file(&page.uid, cap.ext, &cap.bytes)?;
     let final_url = (cap.final_url != page.url).then_some(cap.final_url.as_str());
     store.refresh_page(
@@ -390,6 +395,15 @@ fn refresh_fetched(
         (cap.assets_inlined as i64, cap.assets_failed as i64),
     )?;
     store.page(page.id)
+}
+
+/// A saved copy with its `persistwise:saved-at` stamp taken out.
+fn without_saved_at(bytes: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    static RE: OnceLock<regex::bytes::Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        regex::bytes::Regex::new(r#"<meta name="persistwise:saved-at" content="[^"]*">"#).unwrap()
+    })
+    .replace(bytes, &b""[..])
 }
 
 fn save_fetched(

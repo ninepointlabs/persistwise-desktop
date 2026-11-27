@@ -585,8 +585,11 @@ fn resave_removes_the_old_ipfs_pin_of_a_replaced_page() {
         .set_ipfs(p2, "done", Some("bafyoldcopy"), Some("kubo"), None)
         .unwrap();
 
-    // Unchanged: nothing is unpinned.
+    // Unchanged (saved again in a later second, so only the copy's
+    // saved-at stamp differs): not refreshed, nothing is unpinned.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
     let (same, _) = save(&store, &g.url(), &opts());
+    assert!(same.refreshed_page_ids.is_empty(), "{}", same.message);
     assert!(same.unpinned.is_empty());
     assert!(node.requests_to("/api/v0/pin/rm").is_empty());
 
