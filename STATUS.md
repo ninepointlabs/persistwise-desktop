@@ -1,11 +1,12 @@
 # Persistwise Desktop — STATUS
 
-STATUS: v0.1.2 released (Linux), 2026-11-27. Windows/MSIX and store work not started.
+STATUS: v0.1.3 released (Linux), 2026-11-27. Windows/MSIX and store work not started.
 
 - Repo (private): https://github.com/ninepointlabs/persistwise-desktop
 - PR #1 (v0.1, feat/v0.1 → main): merged 2026-11-24, merge commit fcd02f1.
 - PR #2 (.deb, .rpm, Arch package): https://github.com/ninepointlabs/persistwise-desktop/pull/2, merged by Tim 2026-11-24 10:33 AM CT.
-- Release: https://github.com/ninepointlabs/persistwise-desktop/releases/tag/v0.1.2 (previous: v0.1.1, v0.1.0). v0.1.2: Omarchy light-theme warning colour fix (PR #9), version bump PR #10. Release run 46009744018 attached all 12 Linux files; downloaded AppImage checksum OK, `--self-test` ok.
+- Release: https://github.com/ninepointlabs/persistwise-desktop/releases/tag/v0.1.3 (previous: v0.1.2, v0.1.1, v0.1.0). v0.1.3: old Invision Power Board thread saving (`&st=` paging, http links on https pages, session ids; PR #12), version bump PR #13. Release run 46050099456 attached all 12 Linux files; downloaded AppImage checksum OK, `--self-test` ok.
+- v0.1.2: Omarchy light-theme warning colour fix (PR #9), version bump PR #10, release run 46009744018.
 - PR #6 (CI grep checks fix): merged (62dcce3).
 - PR #7 (whole-thread save, user-chosen archive folder, recovery screen, schema v4): https://github.com/ninepointlabs/persistwise-desktop/pull/7, merged 2026-11-26, merge commit 06f8066; shipped as v0.1.1.
 - Last updated: 2026-11-27
