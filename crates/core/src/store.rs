@@ -8,6 +8,10 @@
 //! settings.json            non-secret settings
 //! secrets.json             pinning keys the user pasted in (mode 0600 on Unix)
 //! ```
+//!
+//! Pages saved together as a multi-page thread are grouped: `threads` holds
+//! one row per thread and `thread_pages` puts each page (at most one thread
+//! per page) at a position in it.
 
 use anyhow::{anyhow, bail, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, Row};
@@ -17,7 +21,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use crate::util;
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 /// Marks where a search hit starts and ends in a snippet. Private-use
 /// characters, so the UI can HTML-escape the snippet and then swap these
@@ -80,8 +84,40 @@ pub struct Page {
     pub capture_error: Option<String>,
     /// When an imported copy had its images and styles embedded.
     pub localized_at: Option<String>,
+    /// The thread this page belongs to, if it was saved as part of one.
+    #[serde(default)]
+    pub thread_id: Option<i64>,
+    #[serde(default)]
+    pub thread_title: Option<String>,
+    /// 1-based page number inside the thread.
+    #[serde(default)]
+    pub thread_page: Option<i64>,
+    /// How many pages the thread has.
+    #[serde(default)]
+    pub thread_page_count: Option<i64>,
+    /// complete | partial
+    #[serde(default)]
+    pub thread_status: Option<String>,
+    #[serde(default)]
+    pub thread_saved_at: Option<String>,
     /// Search snippet, only set on search results.
     pub snippet: Option<String>,
+}
+
+/// A multi-page thread saved as one item.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Thread {
+    pub id: i64,
+    /// The address the save started from.
+    pub url: String,
+    pub title: Option<String>,
+    pub saved_at: String,
+    /// complete | partial
+    pub status: String,
+    /// Why the thread is partial (cap reached, a page failed), if it is.
+    pub note: Option<String>,
+    /// The pages in order.
+    pub pages: Vec<Page>,
 }
 
 /// Fields for a new page row. Everything not listed starts empty/off.
@@ -115,7 +151,19 @@ pub struct Stats {
 const PAGE_COLUMNS: &str = "p.id, p.uid, p.url, p.final_url, p.title, p.author, p.feed_id, f.name, p.guid, \
     p.published_at, p.saved_at, p.content_type, p.local_path, p.size_bytes, p.sha256, p.assets_inlined, \
     p.assets_failed, p.wayback_status, p.wayback_url, p.wayback_error, p.wayback_at, p.ipfs_status, p.cid, \
-    p.pin_service, p.ipfs_error, p.ipfs_at, p.origin, p.capture_error, p.localized_at";
+    p.pin_service, p.ipfs_error, p.ipfs_at, p.origin, p.capture_error, p.localized_at, \
+    tp.thread_id, t.title, \
+    CASE WHEN tp.thread_id IS NULL THEN NULL ELSE (SELECT COUNT(*) + 1 FROM thread_pages x WHERE x.thread_id = tp.thread_id \
+        AND (x.position < tp.position OR (x.position = tp.position AND x.page_id < tp.page_id))) END, \
+    CASE WHEN tp.thread_id IS NULL THEN NULL ELSE (SELECT COUNT(*) FROM thread_pages x WHERE x.thread_id = tp.thread_id) END, \
+    t.status, t.saved_at";
+
+/// Index of the snippet column that search queries add after PAGE_COLUMNS.
+const SNIPPET_COL: usize = 35;
+
+/// The joins every PAGE_COLUMNS query needs.
+const PAGE_JOINS: &str = "LEFT JOIN feeds f ON f.id = p.feed_id \
+    LEFT JOIN thread_pages tp ON tp.page_id = p.id LEFT JOIN threads t ON t.id = tp.thread_id";
 
 fn page_from_row(r: &Row, snippet: Option<String>) -> rusqlite::Result<Page> {
     Ok(Page {
@@ -148,6 +196,12 @@ fn page_from_row(r: &Row, snippet: Option<String>) -> rusqlite::Result<Page> {
         origin: r.get(26)?,
         capture_error: r.get(27)?,
         localized_at: r.get(28)?,
+        thread_id: r.get(29)?,
+        thread_title: r.get(30)?,
+        thread_page: r.get(31)?,
+        thread_page_count: r.get(32)?,
+        thread_status: r.get(33)?,
+        thread_saved_at: r.get(34)?,
         snippet,
     })
 }
@@ -169,17 +223,11 @@ impl Store {
         })
     }
 
-    /// The default data directory for this user:
-    /// Linux `~/.local/share/persistwise` (respects `XDG_DATA_HOME`),
-    /// Windows `%APPDATA%\Nine Point Labs\Persistwise\data`.
-    /// `PERSISTWISE_DATA_DIR` overrides it (handy for portable installs and tests).
+    /// The archive folder to open: `PERSISTWISE_DATA_DIR` if set, else the
+    /// folder the user chose in Settings, else the default
+    /// ([`crate::location::default_dir`]). See [`crate::location`].
     pub fn default_root() -> Result<PathBuf> {
-        if let Some(dir) = std::env::var_os("PERSISTWISE_DATA_DIR").filter(|d| !d.is_empty()) {
-            return Ok(PathBuf::from(dir));
-        }
-        let dirs = directories::ProjectDirs::from("com", "Nine Point Labs", "Persistwise")
-            .ok_or_else(|| anyhow!("could not work out a home directory"))?;
-        Ok(dirs.data_dir().to_path_buf())
+        Ok(crate::location::Locator::from_env()?.resolve()?.path)
     }
 
     pub fn root(&self) -> &Path {
@@ -258,7 +306,7 @@ impl Store {
 
     pub fn page(&self, id: i64) -> Result<Option<Page>> {
         let conn = self.conn();
-        let sql = format!("SELECT {PAGE_COLUMNS} FROM pages p LEFT JOIN feeds f ON f.id = p.feed_id WHERE p.id = ?1");
+        let sql = format!("SELECT {PAGE_COLUMNS} FROM pages p {PAGE_JOINS} WHERE p.id = ?1");
         Ok(conn
             .query_row(&sql, [id], |r| page_from_row(r, None))
             .optional()?)
@@ -266,7 +314,8 @@ impl Store {
 
     pub fn page_by_remote_key(&self, key: &str) -> Result<Option<Page>> {
         let conn = self.conn();
-        let sql = format!("SELECT {PAGE_COLUMNS} FROM pages p LEFT JOIN feeds f ON f.id = p.feed_id WHERE p.remote_key = ?1");
+        let sql =
+            format!("SELECT {PAGE_COLUMNS} FROM pages p {PAGE_JOINS} WHERE p.remote_key = ?1");
         Ok(conn
             .query_row(&sql, [key], |r| page_from_row(r, None))
             .optional()?)
@@ -288,13 +337,13 @@ impl Store {
             Some(q) => {
                 let sql = format!(
                     "SELECT {PAGE_COLUMNS}, snippet(pages_fts, 2, char(57344), char(57345), '…', 16) \
-                     FROM pages_fts JOIN pages p ON p.id = pages_fts.rowid LEFT JOIN feeds f ON f.id = p.feed_id \
+                     FROM pages_fts JOIN pages p ON p.id = pages_fts.rowid {PAGE_JOINS} \
                      WHERE pages_fts MATCH ?1 AND (?2 IS NULL OR p.feed_id = ?2) \
                      ORDER BY bm25(pages_fts, 10.0, 4.0, 1.0, 2.0), p.saved_at DESC LIMIT ?3 OFFSET ?4"
                 );
                 let mut stmt = conn.prepare(&sql)?;
                 let rows = stmt.query_map(params![q, feed_id, limit, offset], |r| {
-                    let snip: Option<String> = r.get(29)?;
+                    let snip: Option<String> = r.get(SNIPPET_COL)?;
                     page_from_row(r, snip.filter(|s| !s.is_empty()))
                 })?;
                 for r in rows {
@@ -303,9 +352,11 @@ impl Store {
             }
             None => {
                 let sql = format!(
-                    "SELECT {PAGE_COLUMNS} FROM pages p LEFT JOIN feeds f ON f.id = p.feed_id \
+                    "SELECT {PAGE_COLUMNS} FROM pages p {PAGE_JOINS} \
                      WHERE (?1 IS NULL OR p.feed_id = ?1) \
-                     ORDER BY COALESCE(p.published_at, p.saved_at) DESC, p.id DESC LIMIT ?2 OFFSET ?3"
+                     AND (?1 IS NOT NULL OR tp.thread_id IS NULL OR NOT EXISTS (SELECT 1 FROM thread_pages x \
+                          WHERE x.thread_id = tp.thread_id AND (x.position < tp.position OR (x.position = tp.position AND x.page_id < tp.page_id)))) \
+                     ORDER BY COALESCE(t.saved_at, p.published_at, p.saved_at) DESC, p.id DESC LIMIT ?2 OFFSET ?3"
                 );
                 let mut stmt = conn.prepare(&sql)?;
                 let rows =
@@ -323,6 +374,11 @@ impl Store {
         let conn = self.conn();
         conn.execute("DELETE FROM pages_fts WHERE rowid = ?1", [id])?;
         conn.execute("DELETE FROM pages WHERE id = ?1", [id])?;
+        // Membership goes with the page (ON DELETE CASCADE); drop emptied threads.
+        conn.execute(
+            "DELETE FROM threads WHERE id NOT IN (SELECT thread_id FROM thread_pages)",
+            [],
+        )?;
         drop(conn);
         if let Some(path) = page.as_ref().and_then(|p| self.file_path(p)) {
             let _ = std::fs::remove_file(path);
@@ -573,7 +629,9 @@ impl Store {
 
     pub fn page_by_feed_guid(&self, feed_id: i64, guid: &str) -> Result<Option<Page>> {
         let conn = self.conn();
-        let sql = format!("SELECT {PAGE_COLUMNS} FROM pages p LEFT JOIN feeds f ON f.id = p.feed_id WHERE p.feed_id = ?1 AND p.guid = ?2");
+        let sql = format!(
+            "SELECT {PAGE_COLUMNS} FROM pages p {PAGE_JOINS} WHERE p.feed_id = ?1 AND p.guid = ?2"
+        );
         Ok(conn
             .query_row(&sql, params![feed_id, guid], |r| page_from_row(r, None))
             .optional()?)
@@ -592,7 +650,7 @@ impl Store {
     fn feed_pages_where(&self, feed_id: i64, cond: &str) -> Result<Vec<Page>> {
         let conn = self.conn();
         let sql = format!(
-            "SELECT {PAGE_COLUMNS} FROM pages p LEFT JOIN feeds f ON f.id = p.feed_id WHERE p.feed_id = ?1 AND ({cond}) ORDER BY p.id"
+            "SELECT {PAGE_COLUMNS} FROM pages p {PAGE_JOINS} WHERE p.feed_id = ?1 AND ({cond}) ORDER BY p.id"
         );
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map([feed_id], |r| page_from_row(r, None))?;
@@ -668,11 +726,64 @@ impl Store {
         Ok(())
     }
 
+    /// True when some saved page still has this IPFS CID.
+    pub fn cid_in_use(&self, cid: &str) -> Result<bool> {
+        Ok(self.conn().query_row(
+            "SELECT EXISTS(SELECT 1 FROM pages WHERE cid = ?1)",
+            [cid],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Replaces a page's saved copy with a fresh capture of the same address
+    /// (the last page of a re-saved thread, to pick up new replies). The
+    /// title, text and save time follow the new copy. The IPFS fields are
+    /// cleared because an earlier CID no longer matches the copy; Wayback
+    /// history is kept.
+    #[allow(clippy::too_many_arguments)]
+    pub fn refresh_page(
+        &self,
+        id: i64,
+        file: (String, i64, String),
+        content_type: &str,
+        final_url: Option<&str>,
+        title: Option<&str>,
+        body_text: &str,
+        assets: (i64, i64),
+    ) -> Result<()> {
+        let old = self
+            .page(id)?
+            .ok_or_else(|| anyhow!("page {id} not found"))?;
+        let conn = self.conn();
+        conn.execute(
+            "UPDATE pages SET local_path = ?2, size_bytes = ?3, sha256 = ?4, content_type = ?5, \
+             final_url = ?6, title = COALESCE(?7, title), assets_inlined = ?8, assets_failed = ?9, \
+             capture_error = NULL, saved_at = ?10, \
+             ipfs_status = 'off', cid = NULL, pin_service = NULL, ipfs_error = NULL, ipfs_at = NULL \
+             WHERE id = ?1",
+            params![id, file.0, file.1, file.2, content_type, final_url, title, assets.0, assets.1, util::now()],
+        )?;
+        let (t, url): (Option<String>, String) =
+            conn.query_row("SELECT title, url FROM pages WHERE id = ?1", [id], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })?;
+        index_page(&conn, id, t.as_deref(), &url, body_text)?;
+        drop(conn);
+        // Same uid, so usually the same file; remove the old one if the
+        // extension changed.
+        if old.local_path.as_deref() != Some(file.0.as_str()) {
+            if let Some(path) = self.file_path(&old) {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+        Ok(())
+    }
+
     /// Imported HTML copies whose images/styles still point at the web.
     pub fn pages_needing_localize(&self, limit: i64) -> Result<Vec<Page>> {
         let conn = self.conn();
         let sql = format!(
-            "SELECT {PAGE_COLUMNS} FROM pages p LEFT JOIN feeds f ON f.id = p.feed_id \
+            "SELECT {PAGE_COLUMNS} FROM pages p {PAGE_JOINS} \
              WHERE p.origin = 'import' AND p.local_path IS NOT NULL AND p.content_type = 'text/html' \
              AND p.localized_at IS NULL ORDER BY p.id LIMIT ?1"
         );
@@ -700,6 +811,147 @@ impl Store {
             params![id, assets.0, assets.1, util::now()],
         )?;
         Ok(())
+    }
+
+    /// The newest page saved from `url` (as typed or after redirects) that
+    /// has a local copy. Used to avoid saving the same thread page twice.
+    pub fn page_by_url(&self, urls: &[&str]) -> Result<Option<Page>> {
+        let conn = self.conn();
+        let sql = format!(
+            "SELECT {PAGE_COLUMNS} FROM pages p {PAGE_JOINS} \
+             WHERE (p.url = ?1 OR p.final_url = ?1) AND p.local_path IS NOT NULL ORDER BY p.id DESC LIMIT 1"
+        );
+        for u in urls {
+            if let Some(p) = conn
+                .query_row(&sql, [u], |r| page_from_row(r, None))
+                .optional()?
+            {
+                return Ok(Some(p));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The thread a page belongs to and its position there.
+    pub fn thread_of_page(&self, page_id: i64) -> Result<Option<(i64, i64)>> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT thread_id, position FROM thread_pages WHERE page_id = ?1",
+                [page_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?)
+    }
+
+    pub fn create_thread(
+        &self,
+        url: &str,
+        title: Option<&str>,
+        status: &str,
+        note: Option<&str>,
+    ) -> Result<i64> {
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO threads (url, title, saved_at, status, note) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![url, title, util::now(), status, note],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// Records the outcome of the latest save of a thread.
+    pub fn update_thread(&self, id: i64, status: &str, note: Option<&str>) -> Result<()> {
+        self.conn().execute(
+            "UPDATE threads SET status = ?2, note = ?3, saved_at = ?4 WHERE id = ?1",
+            params![id, status, note, util::now()],
+        )?;
+        Ok(())
+    }
+
+    /// Puts a page at `position` in a thread, taking it out of any other
+    /// thread it was in (threads left empty are removed).
+    pub fn set_thread_page(&self, thread_id: i64, page_id: i64, position: i64) -> Result<()> {
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO thread_pages (page_id, thread_id, position) VALUES (?1, ?2, ?3) \
+             ON CONFLICT(page_id) DO UPDATE SET thread_id = excluded.thread_id, position = excluded.position",
+            params![page_id, thread_id, position],
+        )?;
+        conn.execute(
+            "DELETE FROM threads WHERE id NOT IN (SELECT thread_id FROM thread_pages)",
+            [],
+        )?;
+        Ok(())
+    }
+
+    /// A thread with its pages in order.
+    pub fn thread(&self, id: i64) -> Result<Option<Thread>> {
+        let conn = self.conn();
+        let head = conn
+            .query_row(
+                "SELECT id, url, title, saved_at, status, note FROM threads WHERE id = ?1",
+                [id],
+                |r| {
+                    Ok(Thread {
+                        id: r.get(0)?,
+                        url: r.get(1)?,
+                        title: r.get(2)?,
+                        saved_at: r.get(3)?,
+                        status: r.get(4)?,
+                        note: r.get(5)?,
+                        pages: Vec::new(),
+                    })
+                },
+            )
+            .optional()?;
+        let Some(mut thread) = head else {
+            return Ok(None);
+        };
+        let sql = format!(
+            "SELECT {PAGE_COLUMNS} FROM pages p {PAGE_JOINS} WHERE tp.thread_id = ?1 ORDER BY tp.position, tp.page_id"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map([id], |r| page_from_row(r, None))?;
+        thread.pages = rows.collect::<rusqlite::Result<_>>()?;
+        Ok(Some(thread))
+    }
+
+    /// Deletes a thread and every page in it.
+    pub fn delete_thread(&self, id: i64) -> Result<()> {
+        let ids: Vec<i64> = {
+            let conn = self.conn();
+            let mut stmt = conn.prepare("SELECT page_id FROM thread_pages WHERE thread_id = ?1")?;
+            let rows = stmt.query_map([id], |r| r.get(0))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        for pid in ids {
+            self.delete_page(pid)?;
+        }
+        self.conn()
+            .execute("DELETE FROM threads WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    /// Writes a consistent copy of the database to `dest` (which must not
+    /// exist yet), even while the archive is in use.
+    pub fn copy_database_to(&self, dest: &Path) -> Result<()> {
+        let d = dest
+            .to_str()
+            .ok_or_else(|| anyhow!("the new folder's path is not valid Unicode"))?;
+        self.conn()
+            .execute("VACUUM INTO ?1", [d])
+            .with_context(|| format!("copying the database to {}", dest.display()))?;
+        Ok(())
+    }
+
+    /// (relative path, size) of every saved file the archive knows about.
+    pub fn local_files(&self) -> Result<Vec<(String, i64)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT local_path, COALESCE(size_bytes, -1) FROM pages WHERE local_path IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     pub fn stats(&self) -> Result<Stats> {
@@ -840,6 +1092,30 @@ fn migrate(conn: &Connection) -> Result<()> {
             BEGIN;
             ALTER TABLE pages ADD COLUMN localized_at TEXT;
             PRAGMA user_version = 3;
+            COMMIT;
+            "#,
+        )?;
+    }
+    if version < 4 {
+        // v4: multi-page threads saved as one item.
+        conn.execute_batch(
+            r#"
+            BEGIN;
+            CREATE TABLE threads (
+                id INTEGER PRIMARY KEY,
+                url TEXT NOT NULL,
+                title TEXT,
+                saved_at TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'complete',
+                note TEXT
+            );
+            CREATE TABLE thread_pages (
+                page_id INTEGER PRIMARY KEY REFERENCES pages(id) ON DELETE CASCADE,
+                thread_id INTEGER NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+                position INTEGER NOT NULL
+            );
+            CREATE INDEX thread_pages_thread ON thread_pages(thread_id, position);
+            PRAGMA user_version = 4;
             COMMIT;
             "#,
         )?;

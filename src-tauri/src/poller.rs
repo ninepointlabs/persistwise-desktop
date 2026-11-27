@@ -15,6 +15,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
+use crate::SharedStore;
+
 pub struct Poller {
     tx: Mutex<Sender<Option<i64>>>,
     pub running: Arc<AtomicBool>,
@@ -28,7 +30,7 @@ struct PollState {
 }
 
 impl Poller {
-    pub fn start(app: AppHandle, store: Arc<Store>) -> Self {
+    pub fn start(app: AppHandle, shared: SharedStore, switching: Arc<AtomicBool>) -> Self {
         let (tx, rx) = channel::<Option<i64>>();
         let running = Arc::new(AtomicBool::new(false));
         let flag = running.clone();
@@ -40,6 +42,12 @@ impl Poller {
                     Ok(only) => Some(only),
                     Err(RecvTimeoutError::Timeout) => None,
                     Err(RecvTimeoutError::Disconnected) => return,
+                };
+                // The archive may have moved since the last check.
+                // No archive while its folder is missing (recovery screen).
+                let Some(store): Option<Arc<Store>> = crate::current(&shared) else {
+                    wait = Duration::from_secs(60);
+                    continue;
                 };
                 let minutes = settings::load(store.root()).feeds.poll_minutes;
                 wait = if minutes == 0 {
@@ -53,7 +61,9 @@ impl Poller {
                     None if minutes == 0 => continue,
                     None => None,
                 };
-                if store.feeds().map(|f| f.is_empty()).unwrap_or(true) {
+                if switching.load(Ordering::SeqCst)
+                    || store.feeds().map(|f| f.is_empty()).unwrap_or(true)
+                {
                     continue;
                 }
                 flag.store(true, Ordering::SeqCst);

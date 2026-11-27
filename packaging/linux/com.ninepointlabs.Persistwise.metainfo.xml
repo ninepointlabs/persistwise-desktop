@@ -33,6 +33,11 @@
   </categories>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.1.1" date="2026-11-26">
+      <description>
+        <p>Save a whole multi-page forum thread or blog archive as one item, and save it again later to pick up new replies and pages. Choose where your archive lives, with a recovery screen if that folder's drive is not connected. The old IPFS pin of an updated page is removed.</p>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-11-23">
       <description>
         <p>First version: local full-page saves, offline browse and search, optional Wayback and IPFS backups, and Persistwise web export import.</p>

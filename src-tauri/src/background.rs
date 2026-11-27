@@ -153,6 +153,20 @@ fn set_windows_flag(root: &Path, on: bool) -> Result<Status, String> {
     Ok(status(root))
 }
 
+/// The `PERSISTWISE_DATA_DIR` the timer runs with: the one the app itself was
+/// started with, else the archive folder when it is not the default one (so
+/// the timer keeps using the folder chosen in Settings even if the pointer
+/// file goes missing). None for the default folder, as before.
+pub fn timer_data_dir(root: &Path, env: Option<String>, default: Option<&Path>) -> Option<String> {
+    if let Some(e) = env.filter(|e| !e.is_empty()) {
+        return Some(e);
+    }
+    match default {
+        Some(d) if persistwise_core::location::same_dir(root, d) => None,
+        _ => Some(root.display().to_string()),
+    }
+}
+
 /// systemd unit files for a check every `minutes`.
 pub fn unit_files(program: &str, minutes: u32, data_dir: Option<&str>) -> (String, String) {
     let quoted = program.replace('\\', "\\\\").replace('"', "\\\"");
@@ -202,9 +216,11 @@ pub fn enable(root: &Path, minutes: u32) -> Result<Status, String> {
     }
     let dir = unit_dir().ok_or("no config folder")?;
     let program = program().ok_or("could not find the Persistwise program")?;
-    let data_dir = std::env::var("PERSISTWISE_DATA_DIR")
-        .ok()
-        .filter(|d| !d.is_empty());
+    let data_dir = timer_data_dir(
+        root,
+        std::env::var(persistwise_core::location::ENV_VAR).ok(),
+        persistwise_core::location::default_dir().ok().as_deref(),
+    );
     let (service, timer) = unit_files(&program, minutes.max(5), data_dir.as_deref());
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     std::fs::write(dir.join(format!("{UNIT}.service")), service).map_err(|e| e.to_string())?;
@@ -245,6 +261,33 @@ mod tests {
         assert!(timer.contains("Persistent=true"));
         assert!(unit_files("/x", 60, None).1.contains("OnCalendar=hourly"));
         assert!(!unit_files("/x", 30, None).0.contains("Environment="));
+    }
+
+    #[test]
+    fn timer_follows_a_chosen_archive_folder() {
+        let default = Path::new("/home/u/.local/share/persistwise");
+        let chosen = Path::new("/media/u/Archive Drive/Persistwise");
+        // Default folder: no override, exactly as before.
+        assert_eq!(timer_data_dir(default, None, Some(default)), None);
+        // A folder chosen in Settings is passed to the timer.
+        let dir = timer_data_dir(chosen, None, Some(default));
+        assert_eq!(dir.as_deref(), Some("/media/u/Archive Drive/Persistwise"));
+        let (service, _) = unit_files("/opt/pw/persistwise-desktop", 15, dir.as_deref());
+        assert!(
+            service.contains(
+                "Environment=\"PERSISTWISE_DATA_DIR=/media/u/Archive Drive/Persistwise\""
+            ),
+            "{service}"
+        );
+        // PERSISTWISE_DATA_DIR given to the app still wins.
+        assert_eq!(
+            timer_data_dir(chosen, Some("/portable".into()), Some(default)).as_deref(),
+            Some("/portable")
+        );
+        assert_eq!(
+            timer_data_dir(chosen, Some(String::new()), Some(default)).as_deref(),
+            Some("/media/u/Archive Drive/Persistwise")
+        );
     }
 
     #[test]

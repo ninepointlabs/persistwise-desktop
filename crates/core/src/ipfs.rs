@@ -14,6 +14,8 @@ use crate::settings::{IpfsMode, IpfsSettings, Secrets};
 
 pub const PINATA_UPLOAD_URL: &str = "https://uploads.pinata.cloud/v3/files";
 pub const PINATA_AUTH_URL: &str = "https://api.pinata.cloud/data/testAuthentication";
+/// Public-network files: `GET ?cid=` lists them, `DELETE /{id}` removes one.
+pub const PINATA_FILES_URL: &str = "https://api.pinata.cloud/v3/files/public";
 
 #[derive(Debug, Clone)]
 pub struct Pinned {
@@ -26,6 +28,7 @@ pub struct Pinned {
 pub struct Endpoints {
     pub pinata_upload: String,
     pub pinata_auth: String,
+    pub pinata_files: String,
 }
 
 impl Default for Endpoints {
@@ -33,6 +36,7 @@ impl Default for Endpoints {
         Self {
             pinata_upload: PINATA_UPLOAD_URL.into(),
             pinata_auth: PINATA_AUTH_URL.into(),
+            pinata_files: PINATA_FILES_URL.into(),
         }
     }
 }
@@ -192,6 +196,106 @@ pub fn pin_file(
                 service: "pinata",
             })
         }
+    }
+}
+
+/// Removes a pin made earlier by [`pin_file`] through `service` ("kubo" or
+/// "pinata"). A CID that is no longer pinned there counts as removed. Fails
+/// when IPFS is now off or set to the other service, since the pin can then
+/// only be removed by hand.
+pub fn unpin(
+    s: &IpfsSettings,
+    secrets: &Secrets,
+    ep: &Endpoints,
+    cid: &str,
+    service: &str,
+) -> Result<()> {
+    let c = crate::http::client(Duration::from_secs(30))?;
+    match (&s.mode, service) {
+        (IpfsMode::Kubo, "kubo") if is_configured(s, secrets) => {
+            let resp = with_kubo_auth(
+                c.post(format!("{}/api/v0/pin/rm", kubo_base(s)))
+                    .query(&[("arg", cid)]),
+                secrets,
+            )
+            .send()
+            .map_err(|_| anyhow!("no IPFS node answered at {}", kubo_base(s)))?;
+            let status = resp.status();
+            if status.is_success() {
+                return Ok(());
+            }
+            let body = resp.text().unwrap_or_default();
+            if body.contains("not pinned") {
+                return Ok(());
+            }
+            bail!(
+                "the IPFS node refused to unpin it (HTTP {})",
+                status.as_u16()
+            )
+        }
+        (IpfsMode::Pinata, "pinata") if is_configured(s, secrets) => {
+            let jwt = secrets.pinata_jwt.as_deref().unwrap_or_default().trim();
+            let mut ids = Vec::new();
+            let mut token: Option<String> = None;
+            loop {
+                let mut q = vec![("cid", cid.to_string()), ("limit", "100".to_string())];
+                if let Some(t) = &token {
+                    q.push(("pageToken", t.clone()));
+                }
+                let resp = c
+                    .get(&ep.pinata_files)
+                    .query(&q)
+                    .bearer_auth(jwt)
+                    .send()
+                    .map_err(|_| anyhow!("could not reach Pinata"))?;
+                if !resp.status().is_success() {
+                    bail!(
+                        "Pinata did not list the file (HTTP {}); the key may lack the files:read permission",
+                        resp.status().as_u16()
+                    );
+                }
+                let v: serde_json::Value = resp.json()?;
+                let files = v.pointer("/data/files").and_then(|f| f.as_array());
+                for f in files.into_iter().flatten() {
+                    // Only exact matches, whatever the filter does.
+                    if f.get("cid").and_then(|x| x.as_str()) == Some(cid) {
+                        if let Some(id) = f.get("id").and_then(|x| x.as_str()) {
+                            ids.push(id.to_string());
+                        }
+                    }
+                }
+                token = v
+                    .pointer("/data/next_page_token")
+                    .and_then(|t| t.as_str())
+                    .filter(|t| !t.is_empty() && files.is_some_and(|f| !f.is_empty()))
+                    .map(str::to_string);
+                if token.is_none() {
+                    break;
+                }
+            }
+            for id in ids {
+                let resp = c
+                    .delete(format!("{}/{}", ep.pinata_files.trim_end_matches('/'), id))
+                    .bearer_auth(jwt)
+                    .send()
+                    .map_err(|_| anyhow!("could not reach Pinata"))?;
+                if !resp.status().is_success() && resp.status().as_u16() != 404 {
+                    bail!(
+                        "Pinata refused to delete it (HTTP {}); the key may lack the files:write permission",
+                        resp.status().as_u16()
+                    );
+                }
+            }
+            Ok(())
+        }
+        _ => bail!(
+            "it was pinned with {}, which is not the IPFS service set up now",
+            if service == "pinata" {
+                "Pinata"
+            } else {
+                "an IPFS node"
+            }
+        ),
     }
 }
 

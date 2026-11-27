@@ -6,15 +6,19 @@
 //! * [`wayback`]: optional backup through the public Save Page Now.
 //! * [`ipfs`]: optional pinning through the user's own node or key.
 //! * [`import`]: bring in a Persistwise web account export.
+//! * [`thread`]: save every page of a multi-page thread as one item.
+//! * [`location`]: where the archive lives, and moving it.
 
 pub mod capture;
 pub mod feeds;
 pub mod http;
 pub mod import;
 pub mod ipfs;
+pub mod location;
 pub mod settings;
 pub mod store;
 pub mod text;
+pub mod thread;
 pub mod util;
 pub mod wayback;
 
@@ -80,6 +84,19 @@ pub fn backup_ipfs(store: &Store, id: i64) -> Result<Page> {
         Err(e) => store.set_ipfs(id, "failed", None, None, Some(&format!("{e:#}")))?,
     }
     store.page(id)?.ok_or_else(|| anyhow!("no such page"))
+}
+
+/// Removes an IPFS pin the archive no longer uses (the earlier copy of a
+/// page that was replaced). Returns false, and leaves the pin, when another
+/// saved page still has that CID.
+pub fn release_pin(store: &Store, cid: &str, service: &str, ep: &ipfs::Endpoints) -> Result<bool> {
+    if store.cid_in_use(cid)? {
+        return Ok(false);
+    }
+    let s = settings::load(store.root());
+    let secrets = settings::load_secrets(store.root());
+    ipfs::unpin(&s.ipfs, &secrets, ep, cid, service)?;
+    Ok(true)
 }
 
 /// Embeds the images, styles and fonts of a saved HTML copy that still

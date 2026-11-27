@@ -12,7 +12,7 @@ no telemetry.
 Linux is free. Windows will be a paid edition through the Microsoft Store.
 There is no macOS version.
 
-> Status: v0.1.0 is out on the
+> Status: v0.1.1 is out on the
 > [releases page](https://github.com/ninepointlabs/persistwise-desktop/releases).
 
 ## Install on Linux
@@ -89,10 +89,124 @@ Microsoft Edge WebView2 runtime (built into Windows 11).
   page can be captured; if it declines because the page was captured recently,
   Persistwise links the newest existing snapshot. A failed backup never affects
   the local copy, and you can try again from the page.
-* **Where it lives.** `~/.local/share/persistwise` on Linux
-  (`~/.var/app/com.ninepointlabs.Persistwise/data/persistwise` for the Flatpak),
-  `%APPDATA%\Nine Point Labs\Persistwise\data` on Windows. Back up that folder
-  to back up everything. `PERSISTWISE_DATA_DIR` overrides it.
+* **Where it lives.** One folder holds everything (see
+  [Where your archive lives](#where-your-archive-lives)); back up that folder
+  to back up everything.
+
+## Saving a whole forum thread
+
+Tick **Save the whole thread** next to the address before pressing Save.
+Persistwise saves the page, then follows the thread's next-page links and saves
+every page, each as its own full offline copy, and shows them as **one item**
+in your archive (title, address, number of pages, date). Open it to read the
+pages in order, with Previous page / Next page and a page picker. Search finds
+text on any page and opens the right page. Plain Save (box unticked) still
+saves just the one page.
+
+* **How the next page is found.** A `Link: …; rel="next"` header,
+  `<link rel="next">` or `<a rel="next">` first; then a link that says "Next"
+  (by its text, title or class) and stays in the same thread; then the next
+  page number in a common form (`?page=2`, `&start=15`, `/page-2`, `/page/2`).
+  That covers typical phpBB, vBulletin, XenForo, MyBB, Discourse and
+  WordPress-style pagination without anything site-specific.
+* **Limits.** Only pages on the same site are followed. It stops when there is
+  no next page, when a link leads back to a page already saved in this run,
+  or after **100 pages**; then the item is marked *partial thread*. Pages are
+  fetched one at a time with a short pause between them. The usual size caps
+  apply to each page.
+* **If a page fails**, the pages already saved are kept and the item is
+  marked partial, with the reason.
+* **Not a thread?** If no next page is found, the one page is saved as a
+  normal page and Persistwise says it did not look like a multi-page thread.
+* **Saving again** (from the first page's address or any other page of the
+  thread) continues the same item instead of starting a new one. The earlier
+  pages are reused as they are, without being downloaded again. The **last
+  saved page is downloaded again** and its copy replaced if it changed, so
+  new replies on it are kept, and any pages that have appeared after it are
+  added to the end, in order, under the same limits. No page is stored twice.
+  If the last page cannot be reached, nothing changes and Persistwise says
+  so; if a new page fails or the 100-page limit is reached, the pages added
+  so far are kept and the item is marked partial.
+* **Wayback and IPFS** work as for a single page, for every page saved or
+  updated by that save: Wayback when "Also send to the Wayback Machine" is
+  ticked (pages already captured are not sent again), IPFS when pin-on-save is
+  on (an updated last page is pinned again, because its content changed).
+  They run one page at a time after the save.
+* **Old IPFS pins are removed.** When the last page's copy is replaced, the
+  pin of its earlier copy is removed from your node or Pinata, unless another
+  saved page has the same content. If that fails (node not running, IPFS now
+  off or set to the other service, a key without delete rights), the save
+  still completes and its message names the CID so you can remove it by hand.
+
+## Where your archive lives
+
+By default:
+
+| | Folder |
+| --- | --- |
+| Linux | `~/.local/share/persistwise` (respects `XDG_DATA_HOME`) |
+| Flatpak | `~/.var/app/com.ninepointlabs.Persistwise/data/persistwise` |
+| Windows | `%APPDATA%\Nine Point Labs\Persistwise\data` |
+
+To keep it somewhere else (another disk, a synced folder), open
+**Settings → Storage → Choose a different folder…** and pick a folder:
+
+* A folder that **already holds a Persistwise archive** is opened as it is.
+  Nothing is merged or overwritten, and your current archive stays where it is.
+* An **empty** folder offers three choices: **Move** your archive there
+  (recommended: one archive; the old copy is removed only after the new one
+  is checked, and a small `persistwise-moved.json` note is left behind so a
+  later start finds the new folder), **Copy** it there (both stay usable;
+  Persistwise uses the new one), or **Start fresh** (an empty archive; the
+  old folder, including your settings and keys, is left alone). Start fresh
+  then asks whether to **keep your settings and API keys** (your Wayback,
+  feed-checking and IPFS settings and saved keys are copied into the new
+  archive; pages, feeds and the library are not) or **start with fresh
+  settings** (defaults, no keys).
+* A folder that **already has other files in it** (your Documents folder, say)
+  is not used directly: Persistwise offers to create a `Persistwise` folder
+  inside it and use that, with the same choices as above (or, if that
+  `Persistwise` folder already holds an archive, to open it). Nothing is
+  created until you choose.
+* The current archive folder, a folder inside it or containing it, a file,
+  and a folder Persistwise cannot write to are refused, with the reason.
+
+**Use the default folder** in the same place goes back. The app switches over
+straight away; if "Keep checking feeds when Persistwise is closed" is on, its
+timer is pointed at the new folder.
+
+Because `settings.json` lives inside the archive, the chosen folder is
+remembered in a small file outside it: `~/.config/persistwise/archive-location.json`
+on Linux (respects `XDG_CONFIG_HOME`; Flatpak:
+`~/.var/app/com.ninepointlabs.Persistwise/config/persistwise/`), and
+`%APPDATA%\Nine Point Labs\Persistwise\config\archive-location.json` on
+Windows. Delete that file to go back to the default folder.
+
+**If the chosen folder is missing when Persistwise starts** (an unplugged
+drive, an unmounted share), the window opens on a screen that says so, with
+three choices: **Retry** (after reconnecting the drive), **Choose a different
+folder…** (same rules as in Settings), or **Use the default folder** (opens
+the archive there, or starts a new, empty one only if you confirm). Nothing is
+created anywhere until you choose, and the missing archive is never changed.
+Without a window (`--poll` from the background timer, `--import`,
+`--self-test`) Persistwise prints the problem and exits instead. When
+`PERSISTWISE_DATA_DIR` is set, it is used as before, with no recovery screen.
+
+The folder is decided in this order, for the window and for `--poll`,
+`--import`, `--self-test` and `--smoke-test` alike:
+
+1. `PERSISTWISE_DATA_DIR`, if set (portable use, tests). While it is set the
+   folder cannot be changed in Settings.
+2. The folder chosen in Settings.
+3. The default above.
+
+**Flatpak:** the Flatpak has no access to your home folder. A folder you pick
+is shared with it through the desktop's file-chooser portal (the document
+portal), which remembers the grant across restarts; Persistwise stores the
+portal's path for it (under `/run/user/<uid>/doc/…`). If that grant is ever
+removed (for example with `flatpak permission-reset com.ninepointlabs.Persistwise`),
+Persistwise shows the folder as unavailable at start; use **Choose a
+different folder…** there and pick the same folder again to renew the grant.
 
 ## IPFS (optional)
 
@@ -105,7 +219,9 @@ Settings:
   saved file there. Any hosted Kubo-compatible RPC also works with your own token.
 * **Your own Pinata key**: create a key in your
   [Pinata account](https://app.pinata.cloud/developers/api-keys) and paste the JWT.
-  Uploads count against your Pinata plan.
+  Uploads count against your Pinata plan. Give the key permission to read
+  and write files: Persistwise uploads with it, and deletes the earlier copy
+  of a page it re-saves in a thread.
 
 Use "Test connection" to check it. Keys stay on your computer in
 `secrets.json` in the data folder (readable only by you) and are only ever
@@ -155,6 +271,9 @@ format: [docs/import-format.md](docs/import-format.md).
 * Imported copies need the network for their images until Persistwise has
   embedded them (a batch per feed check), and images that have since vanished
   from the original site cannot be recovered.
+* Thread saving follows next-page links in the HTML the site sends. Forums
+  that only load later pages with JavaScript (infinite scroll with no page
+  links) save as a single page.
 * No mobile app yet.
 
 ## Build from source

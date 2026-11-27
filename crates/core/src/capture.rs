@@ -392,11 +392,45 @@ fn is_rel(el: &Element, want: &[&str]) -> bool {
 
 /// Saves `url`. Fails only if the page itself cannot be fetched.
 pub fn capture(url: &str, opts: &CaptureOptions) -> Result<Captured> {
+    let client = http::client(opts.timeout)?;
+    let fetched = fetch_document(url, &client, opts)?;
+    capture_fetched(fetched, client, opts)
+}
+
+/// A page fetched but not yet turned into a saved copy.
+#[derive(Debug, Clone)]
+pub struct Fetched {
+    pub final_url: Url,
+    /// The raw Content-Type header, if any.
+    pub header_ct: Option<String>,
+    /// The bare, lowercased MIME type ("" when the server sent none).
+    pub mime: String,
+    pub bytes: Vec<u8>,
+    /// Every `Link:` response header, as sent.
+    pub link_headers: Vec<String>,
+}
+
+impl Fetched {
+    pub fn is_html(&self) -> bool {
+        self.mime.contains("html") || (self.mime.is_empty() && util::looks_like_html(&self.bytes))
+    }
+
+    /// The page decoded as text (only meaningful for HTML).
+    pub fn html(&self) -> String {
+        util::decode_html(&self.bytes, self.header_ct.as_deref())
+    }
+}
+
+/// Fetches the page itself (not its resources), within the page size cap.
+pub fn fetch_document(
+    url: &str,
+    client: &reqwest::blocking::Client,
+    opts: &CaptureOptions,
+) -> Result<Fetched> {
     let parsed = Url::parse(url.trim()).context("that does not look like a web address")?;
     if !matches!(parsed.scheme(), "http" | "https") {
         bail!("only http and https pages can be saved");
     }
-    let client = http::client(opts.timeout)?;
     let resp = client.get(parsed.as_str()).send().with_context(|| {
         format!(
             "could not reach {}",
@@ -423,10 +457,38 @@ pub fn capture(url: &str, opts: &CaptureOptions) -> Result<Captured> {
                 .to_ascii_lowercase()
         })
         .unwrap_or_default();
+    let link_headers = resp
+        .headers()
+        .get_all(reqwest::header::LINK)
+        .iter()
+        .filter_map(|v| v.to_str().ok().map(str::to_string))
+        .collect();
     let bytes = http::read_limited(resp, opts.max_page_bytes)?;
+    Ok(Fetched {
+        final_url,
+        header_ct,
+        mime,
+        bytes,
+        link_headers,
+    })
+}
 
-    let is_html = mime.contains("html") || (mime.is_empty() && util::looks_like_html(&bytes));
-    if !is_html {
+/// Turns a fetched page into a saved copy: HTML gets its resources inlined,
+/// anything else is kept byte for byte.
+pub fn capture_fetched(
+    fetched: Fetched,
+    client: reqwest::blocking::Client,
+    opts: &CaptureOptions,
+) -> Result<Captured> {
+    let is_html = fetched.is_html();
+    let html = is_html.then(|| fetched.html());
+    let Fetched {
+        final_url,
+        mime,
+        bytes,
+        ..
+    } = fetched;
+    let Some(html) = html else {
         let ct = if mime.is_empty() {
             "application/octet-stream".to_string()
         } else {
@@ -456,9 +518,8 @@ pub fn capture(url: &str, opts: &CaptureOptions) -> Result<Captured> {
             assets_failed: 0,
             failed_assets: Vec::new(),
         });
-    }
+    };
 
-    let html = util::decode_html(&bytes, header_ct.as_deref());
     let extracted = textx::extract(&html);
     let out = inline_page(&html, &final_url, client, opts)?;
     Ok(Captured {

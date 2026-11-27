@@ -374,6 +374,7 @@ fn ipfs_pinata_uses_the_users_own_key() {
     let ep = ipfs::Endpoints {
         pinata_upload: format!("{}/v3/files", pinata.base),
         pinata_auth: format!("{}/data/testAuthentication", pinata.base),
+        pinata_files: format!("{}/v3/files/public", pinata.base),
     };
     let mut st = settings::Settings::default();
     st.ipfs.mode = IpfsMode::Pinata;
@@ -401,4 +402,69 @@ fn ipfs_pinata_uses_the_users_own_key() {
         .unwrap();
     assert_eq!(auth.1, "Bearer user-own-jwt-9876");
     assert!(String::from_utf8_lossy(&up.body).contains("public"));
+}
+
+#[test]
+fn ipfs_unpin_removes_only_that_cid() {
+    // Kubo: pin/rm, and "not pinned" counts as done.
+    let kubo = Server::start(|m, url| match (m, url) {
+        ("POST", "/api/v0/pin/rm?arg=bafygone") => {
+            let mut r = Reply::ok(
+                "application/json",
+                r#"{"Message":"not pinned or pinned indirectly","Type":"error"}"#,
+            );
+            r.status = 500;
+            r
+        }
+        ("POST", u) if u.starts_with("/api/v0/pin/rm") => Reply::ok("application/json", "{}"),
+        _ => Reply::status(404),
+    });
+    let mut st = settings::Settings::default();
+    st.ipfs.mode = IpfsMode::Kubo;
+    st.ipfs.kubo_api_url = kubo.base.clone();
+    let none = Secrets::default();
+    let ep = ipfs::Endpoints::default();
+    ipfs::unpin(&st.ipfs, &none, &ep, "bafyold", "kubo").unwrap();
+    ipfs::unpin(&st.ipfs, &none, &ep, "bafygone", "kubo").unwrap();
+    assert!(ipfs::unpin(&st.ipfs, &none, &ep, "bafyold", "pinata").is_err());
+    assert_eq!(kubo.requests_to("/api/v0/pin/rm").len(), 2);
+
+    // Pinata: list by CID (two pages), delete each exact match.
+    let pinata = Server::start(|m, url| match m {
+        "GET" if url.contains("pageToken=next1") => Reply::ok(
+            "application/json",
+            r#"{"data":{"files":[{"id":"f3","cid":"bafyold"}],"next_page_token":""}}"#,
+        ),
+        "GET" if url.starts_with("/v3/files/public?") => Reply::ok(
+            "application/json",
+            r#"{"data":{"files":[{"id":"f1","cid":"bafyold"},{"id":"f2","cid":"bafyother"}],"next_page_token":"next1"}}"#,
+        ),
+        "DELETE" if url == "/v3/files/public/f3" => Reply::status(404),
+        "DELETE" => Reply::ok("application/json", r#"{"data":null}"#),
+        _ => Reply::status(404),
+    });
+    let ep = ipfs::Endpoints {
+        pinata_files: format!("{}/v3/files/public", pinata.base),
+        ..Default::default()
+    };
+    st.ipfs.mode = IpfsMode::Pinata;
+    let secrets = Secrets {
+        pinata_jwt: Some("user-own-jwt".into()),
+        kubo_token: None,
+    };
+    ipfs::unpin(&st.ipfs, &secrets, &ep, "bafyold", "pinata").unwrap();
+    let lists = pinata.requests_to("/v3/files/public?");
+    assert_eq!(lists.len(), 2);
+    assert!(lists[0].url.contains("cid=bafyold"));
+    let deleted: Vec<String> = pinata
+        .seen
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|s| s.method == "DELETE")
+        .map(|s| s.url.clone())
+        .collect();
+    assert_eq!(deleted, ["/v3/files/public/f1", "/v3/files/public/f3"]);
+    // Pinned through a service that is no longer set up.
+    assert!(ipfs::unpin(&st.ipfs, &secrets, &ep, "bafyold", "kubo").is_err());
 }
