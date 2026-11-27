@@ -86,6 +86,19 @@ pub fn backup_ipfs(store: &Store, id: i64) -> Result<Page> {
     store.page(id)?.ok_or_else(|| anyhow!("no such page"))
 }
 
+/// Removes an IPFS pin the archive no longer uses (the earlier copy of a
+/// page that was replaced). Returns false, and leaves the pin, when another
+/// saved page still has that CID.
+pub fn release_pin(store: &Store, cid: &str, service: &str, ep: &ipfs::Endpoints) -> Result<bool> {
+    if store.cid_in_use(cid)? {
+        return Ok(false);
+    }
+    let s = settings::load(store.root());
+    let secrets = settings::load_secrets(store.root());
+    ipfs::unpin(&s.ipfs, &secrets, ep, cid, service)?;
+    Ok(true)
+}
+
 /// Embeds the images, styles and fonts of a saved HTML copy that still
 /// links to them on the web (copies imported from the Persistwise website
 /// were stored that way). Uses the page's own URL as the base. The original

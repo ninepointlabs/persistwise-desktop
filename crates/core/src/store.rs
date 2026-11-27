@@ -726,6 +726,15 @@ impl Store {
         Ok(())
     }
 
+    /// True when some saved page still has this IPFS CID.
+    pub fn cid_in_use(&self, cid: &str) -> Result<bool> {
+        Ok(self.conn().query_row(
+            "SELECT EXISTS(SELECT 1 FROM pages WHERE cid = ?1)",
+            [cid],
+            |r| r.get(0),
+        )?)
+    }
+
     /// Replaces a page's saved copy with a fresh capture of the same address
     /// (the last page of a re-saved thread, to pick up new replies). The
     /// title, text and save time follow the new copy. The IPFS fields are

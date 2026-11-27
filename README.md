@@ -132,6 +132,11 @@ saves just the one page.
   ticked (pages already captured are not sent again), IPFS when pin-on-save is
   on (an updated last page is pinned again, because its content changed).
   They run one page at a time after the save.
+* **Old IPFS pins are removed.** When the last page's copy is replaced, the
+  pin of its earlier copy is removed from your node or Pinata, unless another
+  saved page has the same content. If that fails (node not running, IPFS now
+  off or set to the other service, a key without delete rights), the save
+  still completes and its message names the CID so you can remove it by hand.
 
 ## Where your archive lives
 
@@ -214,7 +219,9 @@ Settings:
   saved file there. Any hosted Kubo-compatible RPC also works with your own token.
 * **Your own Pinata key**: create a key in your
   [Pinata account](https://app.pinata.cloud/developers/api-keys) and paste the JWT.
-  Uploads count against your Pinata plan.
+  Uploads count against your Pinata plan. Give the key permission to read
+  and write files: Persistwise uploads with it, and deletes the earlier copy
+  of a page it re-saves in a thread.
 
 Use "Test connection" to check it. Keys stay on your computer in
 `secrets.json` in the data folder (readable only by you) and are only ever

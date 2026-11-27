@@ -23,7 +23,9 @@
 //! continues it: the earlier pages are reused without fetching them, the
 //! last saved page is fetched again and its copy replaced if it changed (new
 //! replies, a new "next" link), and any pages after it are appended to the
-//! same thread under the same rules.
+//! same thread under the same rules. When the last page is replaced, the
+//! IPFS pin of its earlier copy is removed (unless another saved page has
+//! the same CID); the new copy is pinned like any new save.
 
 use anyhow::{bail, Result};
 use lol_html::html_content::{Element, TextChunk};
@@ -49,6 +51,8 @@ pub struct ThreadOptions {
     /// Pause between page fetches, to be polite to the site.
     pub delay: Duration,
     pub capture: CaptureOptions,
+    /// Where an outdated IPFS pin is removed (see [`crate::release_pin`]).
+    pub ipfs: crate::ipfs::Endpoints,
 }
 
 impl Default for ThreadOptions {
@@ -57,6 +61,7 @@ impl Default for ThreadOptions {
             max_pages: MAX_THREAD_PAGES,
             delay: Duration::from_millis(1500),
             capture: CaptureOptions::default(),
+            ipfs: crate::ipfs::Endpoints::default(),
         }
     }
 }
@@ -82,6 +87,8 @@ pub struct ThreadSave {
     pub refreshed_page_ids: Vec<i64>,
     /// How many pages were already in the archive and reused as they were.
     pub reused: usize,
+    /// IPFS CIDs of replaced copies whose pins were removed.
+    pub unpinned: Vec<String>,
     /// True when this save continued a thread that was already archived.
     pub resumed: bool,
     /// True when no further pages were found.
@@ -123,6 +130,8 @@ pub fn save_thread(
     let mut pages: Vec<Page> = Vec::new();
     let mut new_ids = Vec::new();
     let mut refreshed = Vec::new();
+    // (cid, service) of copies replaced by a refresh.
+    let mut old_pins: Vec<(String, String)> = Vec::new();
     let mut reused = 0;
     // Why the walk stopped early, if it did.
     let mut stopped: Option<String> = None;
@@ -170,6 +179,9 @@ pub fn save_thread(
             })? {
                 Some(p) => {
                     refreshed.push(p.id);
+                    if let (Some(cid), Some(service)) = (&last.cid, &last.pin_service) {
+                        old_pins.push((cid.clone(), service.clone()));
+                    }
                     p
                 }
                 None => {
@@ -251,6 +263,7 @@ pub fn save_thread(
             new_page_ids: new_ids,
             refreshed_page_ids: refreshed,
             reused,
+            unpinned: Vec::new(),
             resumed: false,
             single: true,
             partial: false,
@@ -324,12 +337,27 @@ pub fn save_thread(
         Some(why) => message.push_str(&format!(". This is a partial thread: {why}.")),
         None => message.push('.'),
     }
+    // The replaced copy's pin no longer matches anything in the archive.
+    let mut unpinned = Vec::new();
+    for (cid, service) in old_pins {
+        match crate::release_pin(store, &cid, &service, &opts.ipfs) {
+            Ok(true) => {
+                message.push_str(" The IPFS pin of that page's earlier copy was removed.");
+                unpinned.push(cid);
+            }
+            Ok(false) => {}
+            Err(e) => message.push_str(&format!(
+                " The IPFS pin of that page's earlier copy ({cid}) could not be removed: {e:#}. You can remove it by hand."
+            )),
+        }
+    }
     Ok(ThreadSave {
         thread,
         pages,
         new_page_ids: new_ids,
         refreshed_page_ids: refreshed,
         reused,
+        unpinned,
         resumed,
         single: false,
         partial,

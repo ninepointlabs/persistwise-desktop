@@ -546,3 +546,129 @@ fn resave_when_the_last_page_cannot_be_fetched_changes_nothing() {
     let t = store.thread(t1.id).unwrap().unwrap();
     assert_eq!(t, t1);
 }
+
+/// A Kubo RPC stand-in: `pin/rm` answers with `rm` (status, body).
+fn kubo(rm: (u16, &'static str)) -> Server {
+    Server::start(move |m, url| {
+        if m == "POST" && url.starts_with("/api/v0/pin/rm") {
+            let mut r = Reply::ok("application/json", rm.1);
+            r.status = rm.0;
+            r
+        } else {
+            Reply::status(404)
+        }
+    })
+}
+
+fn use_kubo(dir: &std::path::Path, base: &str) {
+    use persistwise_core::settings::{self, IpfsMode};
+    let mut st = settings::load(dir);
+    st.ipfs.mode = IpfsMode::Kubo;
+    st.ipfs.kubo_api_url = base.to_string();
+    settings::save(dir, &st).unwrap();
+}
+
+#[test]
+fn resave_removes_the_old_ipfs_pin_of_a_replaced_page() {
+    let g = growing(2);
+    let node = kubo((200, r#"{"Pins":["bafyoldcopy"]}"#));
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    use_kubo(dir.path(), &node.base);
+    let (first, _) = save(&store, &g.url(), &opts());
+    let t = first.thread.unwrap();
+    let (p1, p2) = (t.pages[0].id, t.pages[1].id);
+    store
+        .set_ipfs(p1, "done", Some("bafyfirst"), Some("kubo"), None)
+        .unwrap();
+    store
+        .set_ipfs(p2, "done", Some("bafyoldcopy"), Some("kubo"), None)
+        .unwrap();
+
+    // Unchanged: nothing is unpinned.
+    let (same, _) = save(&store, &g.url(), &opts());
+    assert!(same.unpinned.is_empty());
+    assert!(node.requests_to("/api/v0/pin/rm").is_empty());
+
+    // Page 2 changes: its old pin goes, page 1's stays.
+    g.set_replies("a new reply");
+    let (again, _) = save(&store, &g.url(), &opts());
+    assert_eq!(again.refreshed_page_ids, vec![p2]);
+    assert_eq!(again.unpinned, vec!["bafyoldcopy".to_string()]);
+    let rm = node.requests_to("/api/v0/pin/rm");
+    assert_eq!(rm.len(), 1);
+    assert_eq!(rm[0].url, "/api/v0/pin/rm?arg=bafyoldcopy");
+    assert!(
+        again.message.contains("earlier copy was removed"),
+        "{}",
+        again.message
+    );
+    let p2 = store.page(p2).unwrap().unwrap();
+    assert!(p2.cid.is_none() && p2.pin_service.is_none());
+    assert_eq!(
+        store.page(p1).unwrap().unwrap().cid.as_deref(),
+        Some("bafyfirst")
+    );
+}
+
+#[test]
+fn resave_keeps_a_pin_another_page_still_uses() {
+    let g = growing(2);
+    let node = kubo((200, "{}"));
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    use_kubo(dir.path(), &node.base);
+    let (first, _) = save(&store, &g.url(), &opts());
+    let t = first.thread.unwrap();
+    for p in &t.pages {
+        store
+            .set_ipfs(p.id, "done", Some("bafyshared"), Some("kubo"), None)
+            .unwrap();
+    }
+    g.set_replies("another reply");
+    let (again, _) = save(&store, &g.url(), &opts());
+    assert_eq!(again.refreshed_page_ids.len(), 1);
+    assert!(again.unpinned.is_empty());
+    assert!(node.requests_to("/api/v0/pin/rm").is_empty());
+    assert!(!again.message.contains("IPFS"), "{}", again.message);
+}
+
+#[test]
+fn resave_reports_an_old_pin_it_could_not_remove() {
+    let g = growing(2);
+    let node = kubo((500, r#"{"Message":"permission denied","Type":"error"}"#));
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    use_kubo(dir.path(), &node.base);
+    let (first, _) = save(&store, &g.url(), &opts());
+    let p2 = first.thread.unwrap().pages[1].id;
+    store
+        .set_ipfs(p2, "done", Some("bafystuck"), Some("kubo"), None)
+        .unwrap();
+    g.set_replies("yet another reply");
+    let (again, _) = save(&store, &g.url(), &opts());
+    // The save itself succeeds; the message names the pin left behind.
+    assert_eq!(again.refreshed_page_ids, vec![p2]);
+    assert!(again.unpinned.is_empty());
+    assert!(
+        again.message.contains("(bafystuck) could not be removed")
+            && again.message.contains("HTTP 500"),
+        "{}",
+        again.message
+    );
+
+    // Pinned with a service that is no longer set up: reported, not attempted.
+    store
+        .set_ipfs(p2, "done", Some("bafypinata"), Some("pinata"), None)
+        .unwrap();
+    g.set_replies("and one more");
+    let before = node.requests_to("/api/v0/pin/rm").len();
+    let (third, _) = save(&store, &g.url(), &opts());
+    assert_eq!(node.requests_to("/api/v0/pin/rm").len(), before);
+    assert!(
+        third.message.contains("(bafypinata) could not be removed")
+            && third.message.contains("pinned with Pinata"),
+        "{}",
+        third.message
+    );
+}
