@@ -14,7 +14,11 @@
 //!    common pagination form (`?page=2`, `&start=15`, `/page-2`, `/page/2`,
 //!    `/page2`, …).
 //!
-//! Only links on the same host are followed. The walk stops when no next page
+//! Only links on the same host are followed (http and https count as the
+//! same site; on an https page, a same-site `http://` next link is fetched
+//! over https). Two addresses are the same page when they differ only in
+//! http/https, a leading `www.`, the fragment, or a session id in the query
+//! (see [`page_identity`]). The walk stops when no next page
 //! is found, when a page leads back to one already seen, or at
 //! [`ThreadOptions::max_pages`] (then the thread is marked partial). A failed
 //! page also ends the walk; the pages saved before it are kept.
@@ -118,7 +122,7 @@ pub fn save_thread(
     let max = opts.max_pages.max(1);
 
     // An archived thread that this address belongs to.
-    let existing = match store.page_by_url(&[typed.as_str()])? {
+    let existing = match find_page(store, &[typed.as_str()])? {
         Some(p) => match store.thread_of_page(p.id)? {
             Some((tid, _)) => store.thread(tid)?.filter(|t| !t.pages.is_empty()),
             None => None,
@@ -228,7 +232,7 @@ pub fn save_thread(
         let following = next_page(&fetched, &start);
 
         let as_typed = if n == 1 { typed.as_str() } else { cur.as_str() };
-        let existing = store.page_by_url(&[as_typed, cur.as_str(), fetched.final_url.as_str()])?;
+        let existing = find_page(store, &[as_typed, cur.as_str(), fetched.final_url.as_str()])?;
         let page = match existing {
             Some(p) => {
                 reused += 1;
@@ -433,17 +437,79 @@ fn save_fetched(
     )
 }
 
-/// A URL without its fragment, for "have we been here" checks.
+/// For "have we been here" checks: see [`page_identity`].
 fn norm(u: &Url) -> String {
-    let mut u = u.clone();
-    u.set_fragment(None);
-    u.to_string()
+    page_identity(u)
 }
 
+/// The saved page for any of `urls`: first an exact address match, then a
+/// saved page whose address is the same page by [`page_identity`] (another
+/// session id, http instead of https, …).
+fn find_page(store: &Store, urls: &[&str]) -> Result<Option<Page>> {
+    if let Some(p) = store.page_by_url(urls)? {
+        return Ok(Some(p));
+    }
+    for u in urls {
+        let Ok(parsed) = Url::parse(u) else { continue };
+        let Some((host, _)) = host_key(&parsed) else {
+            continue;
+        };
+        let want = page_identity(&parsed);
+        let same = |s: &str| Url::parse(s).is_ok_and(|s| page_identity(&s) == want);
+        if let Some(p) = store.page_by_url_matching(&host, &same)? {
+            return Ok(Some(p));
+        }
+    }
+    Ok(None)
+}
+
+/// Host (lowercase, without a leading `www.`) and port. The port is None
+/// when it is the scheme's default, so `http://x/` and `https://x/` share a
+/// key while an explicit non-default port stays distinct.
 fn host_key(u: &Url) -> Option<(String, Option<u16>)> {
     let h = u.host_str()?.to_ascii_lowercase();
     let h = h.strip_prefix("www.").unwrap_or(&h).to_string();
-    Some((h, u.port_or_known_default()))
+    Some((h, u.port()))
+}
+
+/// A query parameter that only carries a visitor's session, not content:
+/// `PHPSESSID` (any value), and `s` / `sid` (Invision Power Board, phpBB)
+/// when empty or a hex token of 16 to 64 characters. A short or non-hex `s`
+/// or `sid` (a WordPress search, a numeric story id) is kept.
+fn is_session_param(k: &str, v: &str) -> bool {
+    if k.eq_ignore_ascii_case("phpsessid") {
+        return true;
+    }
+    (k.eq_ignore_ascii_case("s") || k.eq_ignore_ascii_case("sid"))
+        && (v.is_empty()
+            || (16..=64).contains(&v.len()) && v.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// The query pairs of `u` without session parameters.
+fn content_query(u: &Url) -> Vec<(String, String)> {
+    u.query_pairs()
+        .filter(|(k, v)| !is_session_param(k, v))
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect()
+}
+
+/// Which page an address names, for loop detection and finding a page in
+/// the archive: host and non-default port as in [`host_key`] (so http and
+/// https, and a leading `www.`, do not matter), path, and the query without
+/// session parameters. The fragment is ignored.
+pub fn page_identity(u: &Url) -> String {
+    let (h, port) = host_key(u).unwrap_or_default();
+    let port = port.map(|p| format!(":{p}")).unwrap_or_default();
+    let q: Vec<String> = content_query(u)
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect();
+    let q = if q.is_empty() {
+        String::new()
+    } else {
+        format!("?{}", q.join("&"))
+    };
+    format!("{h}{port}{}{q}", u.path())
 }
 
 /// Same site: same host (ignoring a leading `www.`) and port. http and https
@@ -468,12 +534,20 @@ struct Anchor {
 pub fn next_page(fetched: &Fetched, start: &Url) -> Option<Url> {
     let here = &fetched.final_url;
     let ok = |u: &Url| same_host(start, u) && norm(u) != norm(here);
+    // Old forums often link `http://` from their own https pages; do not
+    // drop to http for the rest of the walk.
+    let upgrade = |mut u: Url| -> Url {
+        if here.scheme() == "https" && u.scheme() == "http" && same_host(here, &u) {
+            let _ = u.set_scheme("https");
+        }
+        u
+    };
 
     for h in &fetched.link_headers {
         for target in link_header_next(h) {
             if let Ok(u) = here.join(&target) {
                 if ok(&u) {
-                    return Some(u);
+                    return Some(upgrade(u));
                 }
             }
         }
@@ -541,7 +615,7 @@ pub fn next_page(fetched: &Fetched, start: &Url) -> Option<Url> {
         if v.is_empty() || v.starts_with('#') || v.to_ascii_lowercase().starts_with("javascript:") {
             return None;
         }
-        base.join(v).ok().filter(|u| ok(u))
+        base.join(v).ok().filter(|u| ok(u)).map(upgrade)
     };
 
     // 2. <link rel="next">
@@ -637,7 +711,8 @@ enum PageKind {
 
 #[derive(Debug, PartialEq)]
 struct PageKey {
-    /// The URL with its page number taken out (and no fragment).
+    /// The URL with its page number and session parameters taken out (and
+    /// no scheme, default port or fragment).
     base: String,
     number: Option<u64>,
     kind: PageKind,
@@ -665,7 +740,7 @@ fn page_key(u: &Url) -> PageKey {
     let mut number = None;
     let mut kind = PageKind::Number;
     let mut query: Vec<(String, String)> = Vec::new();
-    for (k, v) in u.query_pairs() {
+    for (k, v) in content_query(u) {
         let lk = k.to_ascii_lowercase();
         let n = v.parse::<u64>().ok();
         if number.is_none() && n.is_some() && NUMBER_PARAMS.contains(&lk.as_str()) {
@@ -674,7 +749,7 @@ fn page_key(u: &Url) -> PageKey {
             number = n;
             kind = PageKind::Offset;
         } else {
-            query.push((k.into_owned(), v.into_owned()));
+            query.push((k, v));
         }
     }
     query.sort();
@@ -845,5 +920,181 @@ mod tests {
         );
         let html = r#"<link rel="next" href="https://elsewhere.test/p2">"#;
         assert_eq!(next_of("https://site.test/p1", html), None);
+    }
+    /// Invision Power Board numbered page links (no rel="next"), `&st=`
+    /// offsets with a 30-post step and a session id on every link.
+    const IPB: &str = r#"<div class="pagelinks">
+        <a href="http://forum.test/index.php?s=0123456789abcdef0123456789abcdef&amp;showtopic=123&amp;st=0">1</a>
+        <a href="http://forum.test/index.php?s=0123456789abcdef0123456789abcdef&amp;showtopic=123&amp;st=30">2</a>
+        <a href="http://forum.test/index.php?s=0123456789abcdef0123456789abcdef&amp;showtopic=123&amp;st=60">3</a>
+        <a href="http://forum.test/index.php?s=0123456789abcdef0123456789abcdef&amp;showtopic=123&amp;st=90">4</a>
+        <a href="http://forum.test/index.php?s=0123456789abcdef0123456789abcdef&amp;showtopic=124">Other topic</a>
+        <a href="http://forum.test/index.php?s=0123456789abcdef0123456789abcdef&amp;showforum=7&amp;st=30">Forum page 2</a>
+        </div>"#;
+
+    #[test]
+    fn ipb_st_offsets_with_http_links_and_session_ids() {
+        let s = "s=0123456789abcdef0123456789abcdef&";
+        let want = |st: u32| format!("https://forum.test/index.php?{s}showtopic=123&st={st}");
+        // From the address as typed: https, no session id.
+        assert_eq!(
+            next_of("https://forum.test/index.php?showtopic=123", IPB),
+            Some(want(30))
+        );
+        // From a later page reached with a different session id.
+        assert_eq!(
+            next_of(
+                "https://forum.test/index.php?s=fedcba9876543210fedcba9876543210&showtopic=123&st=30",
+                IPB
+            ),
+            Some(want(60))
+        );
+        assert_eq!(
+            next_of("https://forum.test/index.php?showtopic=123&st=60", IPB),
+            Some(want(90))
+        );
+        assert_eq!(
+            next_of("https://forum.test/index.php?showtopic=123&st=90", IPB),
+            None
+        );
+        // An http page keeps its http links.
+        assert_eq!(
+            next_of("http://forum.test/index.php?showtopic=123", IPB),
+            Some(format!(
+                "http://forum.test/index.php?{s}showtopic=123&st=30"
+            ))
+        );
+        // An empty `s=` (IPB's logged-out form) on the current page.
+        assert_eq!(
+            next_of("https://forum.test/index.php?s=&showtopic=123&st=30", IPB),
+            Some(want(60))
+        );
+    }
+
+    #[test]
+    fn ipb_act_st_form_and_other_step_sizes() {
+        let html = r#"<a href="index.php?act=ST&amp;f=1&amp;t=55&amp;st=20">2</a>
+            <a href="index.php?act=ST&amp;f=1&amp;t=55&amp;st=40">3</a>
+            <a href="index.php?act=ST&amp;f=1&amp;t=56&amp;st=20">x</a>"#;
+        assert_eq!(
+            next_of("https://f.test/index.php?act=ST&f=1&t=55", html).as_deref(),
+            Some("https://f.test/index.php?act=ST&f=1&t=55&st=20")
+        );
+        assert_eq!(
+            next_of("https://f.test/index.php?act=ST&f=1&t=55&st=20", html).as_deref(),
+            Some("https://f.test/index.php?act=ST&f=1&t=55&st=40")
+        );
+        assert_eq!(
+            next_of("https://f.test/index.php?act=ST&f=1&t=55&st=40", html),
+            None
+        );
+        // ?st= as the only query parameter, 25 per page.
+        let html = r#"<a href="/topic.php?st=25">2</a><a href="/topic.php?st=50">3</a>"#;
+        assert_eq!(
+            next_of("https://f.test/topic.php", html).as_deref(),
+            Some("https://f.test/topic.php?st=25")
+        );
+    }
+
+    #[test]
+    fn http_next_links_on_https_pages() {
+        // rel=next, Link header and "Next" text all upgrade to https.
+        let html = r#"<link rel="next" href="http://www.site.test/t/9?page=2">"#;
+        assert_eq!(
+            next_of("https://site.test/t/9", html).as_deref(),
+            Some("https://www.site.test/t/9?page=2")
+        );
+        let html = r#"<a href="http://site.test/t/9?page=2">Next ›</a>"#;
+        assert_eq!(
+            next_of("https://site.test/t/9", html).as_deref(),
+            Some("https://site.test/t/9?page=2")
+        );
+        let mut f = fetched("https://site.test/h", "");
+        f.link_headers = vec![r#"<http://site.test/h?page=2>; rel="next""#.into()];
+        assert_eq!(
+            next_page(&f, &f.final_url)
+                .map(|u| u.to_string())
+                .as_deref(),
+            Some("https://site.test/h?page=2")
+        );
+        // A rel=next to the http form of this very page is not a next page.
+        let html = r#"<link rel="next" href="http://site.test/t/9#top">"#;
+        assert_eq!(next_of("https://site.test/t/9", html), None);
+        // An explicit other port is another site.
+        let html = r#"<link rel="next" href="http://site.test:8080/t/9?page=2">"#;
+        assert_eq!(next_of("https://site.test/t/9", html), None);
+        // Same explicit port, other scheme: same site, kept on https.
+        let html = r#"<a href="http://site.test:8443/t/9?page=2">2</a>"#;
+        assert_eq!(
+            next_of("https://site.test:8443/t/9", html).as_deref(),
+            Some("https://site.test:8443/t/9?page=2")
+        );
+    }
+
+    #[test]
+    fn same_host_ignores_scheme_but_not_ports() {
+        let u = |s: &str| Url::parse(s).unwrap();
+        assert!(same_host(
+            &u("https://forum.test/"),
+            &u("http://forum.test/x")
+        ));
+        assert!(same_host(
+            &u("http://www.forum.test/"),
+            &u("https://forum.test:443/")
+        ));
+        assert!(!same_host(
+            &u("https://forum.test/"),
+            &u("http://forum.test:8080/")
+        ));
+        assert!(!same_host(
+            &u("https://forum.test/"),
+            &u("ftp://forum.test/")
+        ));
+    }
+
+    #[test]
+    fn page_identity_ignores_scheme_and_session_ids_only() {
+        let id = |s: &str| page_identity(&Url::parse(s).unwrap());
+        let a = id("https://forum.test/index.php?showtopic=123&st=30");
+        for same in [
+            "http://forum.test/index.php?showtopic=123&st=30",
+            "http://www.forum.test/index.php?s=0123456789abcdef0123456789abcdef&showtopic=123&st=30#entry9",
+            "https://forum.test/index.php?s=&showtopic=123&st=30",
+            "https://forum.test/index.php?showtopic=123&sid=ABCDEF0123456789ABCDEF0123456789&st=30",
+            "https://forum.test/index.php?PHPSESSID=q7v0abc&showtopic=123&st=30",
+        ] {
+            assert_eq!(id(same), a, "{same}");
+        }
+        for other in [
+            "https://forum.test/index.php?showtopic=123&st=60",
+            "https://forum.test/index.php?showtopic=124&st=30",
+            "https://forum.test:8443/index.php?showtopic=123&st=30",
+        ] {
+            assert_ne!(id(other), a, "{other}");
+        }
+        // Content that only looks like a session parameter is kept.
+        assert_ne!(
+            id("https://blog.test/?s=radios"),
+            id("https://blog.test/?s=valves")
+        );
+        assert_ne!(
+            id("https://nuke.test/modules.php?name=News&sid=12"),
+            id("https://nuke.test/modules.php?name=News&sid=13")
+        );
+    }
+
+    #[test]
+    fn page_key_ignores_session_ids_and_scheme() {
+        let k = |s: &str| page_key(&Url::parse(s).unwrap());
+        let a = k("https://forum.test/index.php?showtopic=123");
+        let b = k(
+            "http://forum.test/index.php?s=0123456789abcdef0123456789abcdef&showtopic=123&st=30",
+        );
+        assert_eq!(a.base, b.base);
+        assert_eq!((b.number, b.kind), (Some(30), PageKind::Offset));
+        assert_ne!(
+            a.base,
+            k("https://forum.test/index.php?showtopic=124&st=30").base
+        );
     }
 }

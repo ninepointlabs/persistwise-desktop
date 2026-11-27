@@ -106,9 +106,12 @@ saves just the one page.
 * **How the next page is found.** A `Link: …; rel="next"` header,
   `<link rel="next">` or `<a rel="next">` first; then a link that says "Next"
   (by its text, title or class) and stays in the same thread; then the next
-  page number in a common form (`?page=2`, `&start=15`, `/page-2`, `/page/2`).
-  That covers typical phpBB, vBulletin, XenForo, MyBB, Discourse and
-  WordPress-style pagination without anything site-specific.
+  page number in a common form (`?page=2`, `&start=15`, `&st=30`, `/page-2`,
+  `/page/2`). That covers typical phpBB, vBulletin, XenForo, MyBB, Discourse,
+  old Invision Power Board and WordPress-style pagination without anything
+  site-specific. `http://` links on an `https://` page of the same site are
+  followed over https, and a session id in the address (`s=…`, `sid=…`,
+  `PHPSESSID=…`) does not make the same page look like a different one.
 * **Limits.** Only pages on the same site are followed. It stops when there is
   no next page, when a link leads back to a page already saved in this run,
   or after **100 pages**; then the item is marked *partial thread*. Pages are

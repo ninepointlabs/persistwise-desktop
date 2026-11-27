@@ -675,3 +675,213 @@ fn resave_reports_an_old_pin_it_could_not_remove() {
         third.message
     );
 }
+
+/// An old Invision Power Board topic: `index.php?showtopic=7&st=N`, 20 posts
+/// a page (not IPB's usual 30), numbered page links only (no rel="next"),
+/// written as absolute `http://` addresses with a session id `s=` that is
+/// new on every response. `total` pages exist.
+struct Ipb {
+    server: Server,
+    total: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+const IPB_STEP: usize = 20;
+
+fn ipb(total: usize) -> Ipb {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    let t = Arc::new(AtomicUsize::new(total));
+    let t2 = t.clone();
+    let sessions = AtomicUsize::new(1);
+    let base: Arc<std::sync::OnceLock<String>> = Arc::new(std::sync::OnceLock::new());
+    let base2 = base.clone();
+    let server = Server::start(move |_m, url| {
+        let (path, query) = url.split_once('?').unwrap_or((url, ""));
+        if path != "/index.php" {
+            return Reply::status(404);
+        }
+        let mut topic = None;
+        let mut st = 0;
+        for kv in query.split('&') {
+            match kv.split_once('=') {
+                Some(("showtopic", v)) => topic = Some(v.to_string()),
+                Some(("st", v)) => st = v.parse().unwrap_or(usize::MAX),
+                _ => {}
+            }
+        }
+        if topic.as_deref() != Some("7") || st % IPB_STEP != 0 {
+            return Reply::status(404);
+        }
+        let n = st / IPB_STEP + 1;
+        let total = t2.load(Ordering::SeqCst);
+        if n > total {
+            return Reply::status(404);
+        }
+        let sid = format!("{:032x}", sessions.fetch_add(1, Ordering::SeqCst) * 7919);
+        let host = base2.get().unwrap();
+        let mut links = String::new();
+        for i in 0..total {
+            links.push_str(&format!(
+                r#"<a href="{host}/index.php?s={sid}&amp;showtopic=7&amp;st={}">{}</a> "#,
+                i * IPB_STEP,
+                i + 1
+            ));
+        }
+        links.push_str(&format!(
+            r#"<a href="{host}/index.php?s={sid}&amp;showtopic=8">Next topic</a>"#
+        ));
+        Reply::ok(
+            "text/html",
+            page(
+                &format!("IPB topic 7 - page {n} of {total}"),
+                &format!("posts {st} onwards {links}"),
+                "",
+            ),
+        )
+    });
+    base.set(server.base.clone()).unwrap();
+    Ipb { server, total: t }
+}
+
+impl Ipb {
+    fn set_total(&self, n: usize) {
+        self.total.store(n, std::sync::atomic::Ordering::SeqCst);
+    }
+    /// Requests for page `n` (1-based), whatever the session id.
+    fn hits(&self, n: usize) -> usize {
+        let want = if n == 1 {
+            None
+        } else {
+            Some(format!("st={}", (n - 1) * IPB_STEP))
+        };
+        self.server
+            .requests_to("/index.php")
+            .iter()
+            .filter(|s| {
+                let st = s.url.split(['?', '&']).find(|p| p.starts_with("st="));
+                match (&want, st) {
+                    (None, None) | (None, Some("st=0")) => true,
+                    (Some(w), Some(st)) => st == w,
+                    _ => false,
+                }
+            })
+            .count()
+    }
+    fn url(&self) -> String {
+        format!("{}/index.php?showtopic=7", self.server.base)
+    }
+    /// The same server addressed as https (only for archive lookups; the
+    /// test server cannot answer TLS).
+    fn https_url(&self, query: &str) -> String {
+        format!(
+            "{}/index.php?{query}",
+            self.server.base.replacen("http://", "https://", 1)
+        )
+    }
+}
+
+#[test]
+fn ipb_st_offsets_with_session_ids_are_one_thread() {
+    let f = ipb(4);
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let (r, progress) = save(&store, &f.url(), &opts());
+    assert!(!r.single && !r.partial, "{}", r.message);
+    assert_eq!(progress, vec![1, 2, 3, 4]);
+    let t = r.thread.unwrap();
+    let titles: Vec<_> = t.pages.iter().map(|p| p.title.clone().unwrap()).collect();
+    assert_eq!(
+        titles,
+        (1..=4)
+            .map(|n| format!("IPB topic 7 - page {n} of 4"))
+            .collect::<Vec<_>>()
+    );
+    // Each page fetched once, although every link carried a new session id
+    // and page 1 is linked again as st=0.
+    for n in 1..=4 {
+        assert_eq!(f.hits(n), 1, "page {n}");
+    }
+    assert_eq!(f.server.requests_to("/index.php").len(), 4);
+    assert!(t.pages[2].url.contains("showtopic=7&st=40"));
+    assert_eq!(store.stats().unwrap().pages, 4);
+}
+
+#[test]
+fn ipb_resave_with_new_session_id_and_other_scheme_continues_the_thread() {
+    let f = ipb(2);
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let t1 = save(&store, &f.url(), &opts()).0.thread.unwrap();
+    assert_eq!(t1.pages.len(), 2);
+    let (p1, p2) = (t1.pages[0].id, t1.pages[1].id);
+
+    // Two more pages; re-saved from an address with another session id.
+    f.set_total(4);
+    let (r, progress) = save(
+        &store,
+        &format!(
+            "{}/index.php?s=feedfacefeedfacefeedfacefeedface&showtopic=7",
+            f.server.base
+        ),
+        &opts(),
+    );
+    assert!(r.resumed && !r.partial, "{}", r.message);
+    assert_eq!(progress, vec![2, 3, 4]);
+    let t2 = r.thread.unwrap();
+    assert_eq!(t2.id, t1.id);
+    assert_eq!(r.reused, 1);
+    // Page 2 changed (it now links pages 3 and 4), so it was refreshed.
+    assert_eq!(r.refreshed_page_ids, vec![p2]);
+    assert_eq!(r.new_page_ids.len(), 2);
+    assert_eq!(
+        t2.pages.iter().map(|p| p.id).take(2).collect::<Vec<_>>(),
+        [p1, p2]
+    );
+    assert_eq!((f.hits(1), f.hits(2), f.hits(3), f.hits(4)), (1, 2, 1, 1));
+    assert_eq!(store.stats().unwrap().pages, 4);
+    assert_eq!(store.list_pages(None, None, 50, 0).unwrap().len(), 1);
+
+    // Re-saved from the https form of page 3 with yet another session id:
+    // found in the archive, same thread, only the last page checked.
+    let (r, _) = save(
+        &store,
+        &f.https_url("s=0badc0de0badc0de0badc0de0badc0de&showtopic=7&st=40"),
+        &opts(),
+    );
+    assert!(r.resumed, "{}", r.message);
+    let t3 = r.thread.unwrap();
+    assert_eq!(t3.id, t1.id);
+    assert_eq!(t3.pages.len(), 4);
+    assert!(r.new_page_ids.is_empty());
+    assert_eq!((f.hits(1), f.hits(2), f.hits(3), f.hits(4)), (1, 2, 1, 2));
+
+    // And from the https form of the first page, no session id.
+    let (r, _) = save(&store, &f.https_url("showtopic=7"), &opts());
+    assert!(r.resumed, "{}", r.message);
+    assert_eq!(r.thread.unwrap().id, t1.id);
+    assert_eq!(store.stats().unwrap().pages, 4);
+    assert_eq!(store.list_pages(None, None, 50, 0).unwrap().len(), 1);
+}
+
+#[test]
+fn a_page_saved_alone_is_reused_despite_a_new_session_id() {
+    let f = ipb(3);
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    // Page 2 saved on its own earlier, under an old session id.
+    let earlier = save_page(
+        &store,
+        &format!(
+            "{}/index.php?s=00000000000000000000000000000abc&showtopic=7&st=20",
+            f.server.base
+        ),
+        &Default::default(),
+    )
+    .unwrap();
+    let (r, _) = save(&store, &f.url(), &opts());
+    let t = r.thread.unwrap();
+    assert_eq!(t.pages.len(), 3);
+    assert_eq!(t.pages[1].id, earlier.id);
+    assert_eq!(r.reused, 1);
+    assert_eq!(store.stats().unwrap().pages, 3);
+}
