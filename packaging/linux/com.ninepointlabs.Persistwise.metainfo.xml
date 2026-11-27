@@ -33,6 +33,11 @@
   </categories>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.1.3" date="2026-11-27">
+      <description>
+        <p>Saving a whole thread now works on old Invision Power Board forums: &amp;st= page offsets, http page links on https pages and changing session ids no longer stop the walk or start a second copy when the thread is saved again.</p>
+      </description>
+    </release>
     <release version="0.1.2" date="2026-11-27">
       <description>
         <p>Warnings such as the Partial thread badge stay readable under Omarchy light themes like Flexoki Light, Catppuccin Latte and Rose Pine.</p>
