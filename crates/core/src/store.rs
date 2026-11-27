@@ -832,6 +832,46 @@ impl Store {
         Ok(None)
     }
 
+    /// The newest saved page on `host` (a lowercase host name, matched as a
+    /// substring of the address) whose address or final address satisfies
+    /// `same`. For finding a page under another form of its address (see
+    /// [`crate::thread::page_identity`]) without a schema change.
+    pub fn page_by_url_matching(
+        &self,
+        host: &str,
+        same: &dyn Fn(&str) -> bool,
+    ) -> Result<Option<Page>> {
+        let id = {
+            let conn = self.conn();
+            let mut stmt = conn.prepare(
+                "SELECT id, url, final_url FROM pages \
+                 WHERE local_path IS NOT NULL \
+                   AND (instr(lower(url), ?1) > 0 OR instr(lower(coalesce(final_url, '')), ?1) > 0) \
+                 ORDER BY id DESC",
+            )?;
+            let rows = stmt.query_map([host.to_ascii_lowercase()], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                ))
+            })?;
+            let mut found = None;
+            for row in rows {
+                let (id, url, final_url) = row?;
+                if same(&url) || final_url.as_deref().is_some_and(same) {
+                    found = Some(id);
+                    break;
+                }
+            }
+            found
+        };
+        match id {
+            Some(id) => self.page(id),
+            None => Ok(None),
+        }
+    }
+
     /// The thread a page belongs to and its position there.
     pub fn thread_of_page(&self, page_id: i64) -> Result<Option<(i64, i64)>> {
         Ok(self
