@@ -12,7 +12,7 @@ no telemetry.
 Linux is free. Windows will be a paid edition through the Microsoft Store.
 There is no macOS version.
 
-> Status: v0.1.0 is out on the
+> Status: v0.1.1 is out on the
 > [releases page](https://github.com/ninepointlabs/persistwise-desktop/releases).
 
 ## Install on Linux
